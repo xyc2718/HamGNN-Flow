@@ -22,7 +22,6 @@ from .input.config_parsing import read_config
 from .models.Model import Model
 from .models.HamGNN.net import HamGNNTransformer, HamGNNConvE3, HamGNNPlusPlusOut
 from types import SimpleNamespace
-from ..communication import JSONCommunicator, HDF5Communicator, BaseCommunicator
 import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 import numpy as np
@@ -39,7 +38,6 @@ class HamGNNServer:
         if not args.config:
             raise ValueError("配置文件路径不能为空，请使用 --config 参数指定。")
         config_path = args.config
-        self.communicator: BaseCommunicator = self._get_communicator()
         self.config = self._load_config(config_path=config_path)
         self._setup_device()
         self._load_model()
@@ -70,14 +68,6 @@ class HamGNNServer:
         
         self.device = torch.device("cuda" if use_gpu else "cpu")
         logging.info(f"使用的计算设备: {self.device}，计算精度: {self.dtype}")
-
-    def _get_communicator(self, communicator_type: str = 'json'):
-        """实例化一个通信器。"""
-        logging.info(f"正在初始化通信器: {communicator_type}")
-        if communicator_type.lower() == 'hdf5':
-            return HDF5Communicator()
-        elif communicator_type.lower() == 'json':
-            return JSONCommunicator()
 
     def _load_model(self):
         """构建模型结构并从检查点文件加载权重。"""
