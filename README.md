@@ -1,5 +1,7 @@
 # HamGNN Prediction Server
 
+> ⚠️ **Warning:** This code is currently under development.
+
 This is a Flask-based web server for performing Hamiltonian predictions, based on a refactored version of [Yang Zhong's HamGNN 2.0](https://github.com/QuantumLab-ZY/HamGNN).
 
 It's designed to provide fast and efficient predictions by keeping the HamGNN model continuously loaded in memory. This eliminates the "cold start" time typically required for script-based predictions.
