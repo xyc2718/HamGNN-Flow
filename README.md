@@ -1,4 +1,4 @@
-# HamGNN Prediction Server
+# HamGNN Prediction Server and Work Flow
 
 > ⚠️ **Warning:** This code is currently under development.
 
