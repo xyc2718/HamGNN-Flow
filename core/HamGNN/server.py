@@ -202,7 +202,7 @@ class HamGNNServer:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(('', 0)); return s.getsockname()[1]
 
-    @staticmethod
+    @staticmethod #TODO:线程安全地自动添加或更新服务器信息文件，以支持多个服务器实例。
     def _write_server_info(host, port, info_file):
         """静态方法：将服务器地址信息写入到共享文件。"""
         server_info = {"host": host, "port": port, "pid": os.getpid()}

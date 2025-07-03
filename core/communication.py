@@ -61,6 +61,7 @@ class Communicator(BaseCommunicator):
         try: 
             # 检查请求中是否直接包含 .npz 文件（通过 multipart/form-data 上传）
             if 'graph' in request.files:
+                #TODO:改成通过2进制流发送graph_data
                 #FIXME 现在似乎找不到这个文件，报错：
                 #                 2025-07-02 00:05:38,224 - ERROR - 预处理输入数据时发生错误: 'NoneType' object has no attribute 'open'
                 # Traceback (most recent call last):

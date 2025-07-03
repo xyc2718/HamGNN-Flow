@@ -6,6 +6,8 @@ Date: 2024-08-24 16:14:48
 LastEditors: Yang Zhong
 LastEditTime: 2025-06-09 14:13:10
 '''
+import logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 import torch
 from torch import nn
 from typing import Any, Callable, Dict, List, Optional, Type, Union, Tuple
@@ -1987,7 +1989,11 @@ class HamGNNPlusPlusOut(nn.Module):
         return mask_real_imag, mask_all
 
     def forward(self, data, graph_representation: dict = None):
-    
+        logging.debug(f"[MODEL]  已进入 output_model.forward 方法。")
+        logging.debug(f"[MODEL]  收到的 'data' 参数的内存ID: {id(data)}")
+        logging.debug(f"[MODEL]  收到的 'graph_representation' 参数的内存ID: {id(graph_representation)}")
+        logging.debug(f"[MODEL]  收到的 'graph_representation' 的类型: {type(graph_representation)}")
+        logging.debug(f"[MODEL]  收到的 'graph_representation' 的值: {repr(graph_representation)}") 
         # To be compatible with the format of Hongyu yu
         if 'H0_u' in data:
             Hon_u0 = data.H0_u[:len(data.z)].flatten(1)
