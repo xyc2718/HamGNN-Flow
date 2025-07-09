@@ -21,4 +21,4 @@ echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 nvidia-smi
 python --version
 
-python -m core.HamGNN.server --config /ssd/work/ycxie/hamgnn/testopenmx/HamGNN-Flow/universal/config_predict.yaml
+python -m core.HamGNN.hamgnnServer --config /ssd/work/ycxie/hamgnn/testopenmx/HamGNN-Flow/universal/config_predict.yaml

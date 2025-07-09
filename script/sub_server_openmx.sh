@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --partition chu       # 8-4090 or  4v100
+#SBATCH --partition 4v100       # 8-4090 or  4v100
 #SBATCH --nodes=1                     
 #SBATCH --ntasks=1               # 
 #SBATCH --cpus-per-task=12       # 8-4090 <= 12 per gpu   4v100  <=4  per gpu

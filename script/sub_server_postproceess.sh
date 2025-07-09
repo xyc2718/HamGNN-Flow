@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --partition chu       
+#SBATCH --partition 4v100       
 #SBATCH --nodes=1                     
 #SBATCH --ntasks=1               # 
 #SBATCH --cpus-per-task=12       # 8-4090 <= 12 per gpu   4v100  <=4  per gpu
@@ -35,4 +35,4 @@ Job Start Time:   $(date +"%Y-%m-%d %H:%M:%S")
 EOF
 python --version
 
-python -m core.openmx-flow.postProcessServer
+python -m core.openmx-flow.postprocessServer

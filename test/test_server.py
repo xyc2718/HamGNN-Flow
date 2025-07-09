@@ -1,8 +1,9 @@
 # tests/test_server.py
 """
-针对 server_oop.py 的最终版集成测试。
+针对 server.py 的最终版集成测试。
 该测试模拟了“基于路径”的API调用方式。
 """
+#FIXME:这个测试目前还无法正确执行
 import pytest
 import requests
 import json

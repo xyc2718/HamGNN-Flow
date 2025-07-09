@@ -183,7 +183,9 @@ class HamGNNCommunicator(BaseCommunicator):
             output_file.parent.mkdir(parents=True, exist_ok=True)
             np.save(output_file, hamiltonian_tensor.cpu().numpy())
             logging.info(f"预测结果已保存到: {output_file}")
-            return jsonify({"output_file": str(output_file), "status": "success"}), 200
+            l1_loss= hamiltonian_output.get('l1_loss', None)
+            l2_loss= hamiltonian_output.get('l2_loss', None)
+            return jsonify({"output_file": str(output_file),"l1_loss":l1_loss,"l2_loss":l2_loss, "status": "success"}), 200
         else:
             # 如果没有提供输出路径，则直接返回结果
             result = hamiltonian_tensor.cpu().numpy().tolist()
