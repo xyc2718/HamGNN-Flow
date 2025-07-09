@@ -118,6 +118,7 @@ def graph_data_gen(input):
         raise(ValueError(f"Failed to read crystal parameters from {f_dat}. "))
     
     if soc_switch:
+        os.system("cd " + scf_path)
         # read hopping parameters
         os.system(read_openmx_path + " " + f_sc)
         if not os.path.exists(os.path.join(scf_path, "HS.json")):

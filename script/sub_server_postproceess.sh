@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --partition chu       # 8-4090 or  4v100
+#SBATCH --partition chu       
 #SBATCH --nodes=1                     
 #SBATCH --ntasks=1               # 
 #SBATCH --cpus-per-task=12       # 8-4090 <= 12 per gpu   4v100  <=4  per gpu
 #SBATCH --mem=32G               # 8-4090 <= 100G per gpu 4v100  <=50G per gpu 
-#SBATCH --output=./log/OpenmxServerOutput.log  
-#SBATCH --error=./log/OpenmxServerINFO.log  
+#SBATCH --output=./log/PostProcessServerOutput.log  
+#SBATCH --error=./log/PostProcessServerINFO.log  
 #SBATCH --job-name=Server_Openmx
 
 ulimit -s unlimited
@@ -35,4 +35,4 @@ Job Start Time:   $(date +"%Y-%m-%d %H:%M:%S")
 EOF
 python --version
 
-python -m core.openmx-flow.openmxServer
+python -m core.openmx-flow.postProcessServer

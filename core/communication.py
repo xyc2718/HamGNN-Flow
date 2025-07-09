@@ -240,16 +240,63 @@ class OpenmxCommunicator(BaseCommunicator):
         return jsonify(response_data), 200
         
     def pack_request(self, structure_data: dict) -> tuple:
-        # JSON请求体就是字典本身，请求头可以为空或指定application/json
         headers = {'Content-Type': 'application/json'}
         return structure_data, headers
 
     def unpack_response(self, requests_response: RequestsResponse):
-        response_data = requests_response.json()
-        if "output_file" in response_data:
-            return np.load(response_data['output_file'], allow_pickle=True).item()
-        elif "hamiltonian_matrix" in response_data:
-            return np.array(response_data['hamiltonian_matrix'])
-        else:
-            raise ValueError("响应中不包含有效的预测结果。请检查服务器日志以获取更多信息。")
+        return requests_response.json()
+class PostProcessCommunicator(BaseCommunicator):
+    """
+    PostProcess Server的通信器,处理客户端和服务器之间的所有数据交换。
+    methods:
+    """
+    def __init__(self):
+        self.type = "PostProcessCommunicator"  # 通信器类型标识
+    def unpack_request(self, request):
+        """
+        从Flask请求中解析输入数据
+        """
+        logging.info("正在预处理输入数据... ")
+        try: 
+            json_data = request.get_json()
+            if not json_data or 'hamiltonian_path' not in json_data:
+                return jsonify({"error": "请求中必须包含 'hamiltonian_path' 键。"}), 400
+            hamiltonian_path = json_data['hamiltonian_path']
+            graph_data_path = json_data['graph_data_path']
+            if not json_data or 'graph_data_path' not in json_data:
+                return jsonify({"error": "请求中必须包含 'graph_data_path' 键。"}), 400
+            if type(hamiltonian_path) is not str:
+                try:
+                    hamiltonian_path = str(hamiltonian_path)
+                except Exception as e:
+                    logging.error(f"转换 hamiltonian_path 时发生错误: {e}")
+                    raise ValueError("hamiltonian_path 必须是字符串类型。")
+            if not Path(hamiltonian_path).exists():
+                 raise ValueError(f"指定的哈密顿量文件路径不存在: {hamiltonian_path}")
+            if type(json_data['graph_data_path']) is not str:
+                try:
+                    graph_data_path = str(json_data['graph_data_path'])
+                except Exception as e:
+                    logging.error(f"转换 graph_data_path 时发生错误: {e}")
+                    raise ValueError("graph_data_path 必须是字符串类型。")
+            if not Path(graph_data_path).exists():
+                raise ValueError(f"指定的图数据文件路径不存在: {graph_data_path}")
+            band_para = json_data.get('band_para', {})
+            current_dir = json_data.get('current_dir',True)
+            return hamiltonian_path, graph_data_path, band_para, current_dir
+        except Exception as e:
+            logging.error(f"预处理输入数据时发生错误: {e}")
+            return jsonify({"error": f"无法处理输入数据: {e}"}), 400        
+
+    def pack_response(self,response_data: dict):
+        """
+        将计算结果打包成一个Flask的json响应对象。
+        """
+        return jsonify(response_data), 200
+    def pack_request(self, structure_data: dict) -> tuple:
+        return jsonify(structure_data)
+
+    def unpack_response(self, requests_response: RequestsResponse):
+        return requests_response.json()
+
     

@@ -27,12 +27,14 @@ from .input.config_parsing import read_config
 from .models.Model import Model
 from .models.HamGNN.net import HamGNNTransformer, HamGNNConvE3, HamGNNPlusPlusOut
 from types import SimpleNamespace
-from ..communication import Communicator, BaseCommunicator
+from ..communication import HamGNNCommunicator as Communicator, BaseCommunicator
 import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 import numpy as np
 from flask import request, jsonify, Response as FlaskResponse
 import pytorch_lightning as pl
+from ..utils import write_server_info
+from ..utils import find_free_port, get_package_path
 # --- 服务器主类 ---
 class HamGNNServer:
     def __init__(self, args):
@@ -52,6 +54,7 @@ class HamGNNServer:
         self.app = Flask(__name__)
         self.app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 设置最大请求体大小为100MB"]
         self._register_routes()
+        self.type = "HamGNNServer"  # 服务器类型标识
 
     def _load_config(self, config_path: str):
         """加载YAML配置文件。"""
@@ -185,30 +188,28 @@ class HamGNNServer:
         启动服务器，包括HPC的服务发现功能。
         这个方法对应于服务器的“运行”阶段。
         """
-        {}
-        info_file_path = Path(os.path.expanduser(os.path.join(os.path.dirname(os.path.abspath(__file__)),"hamgnn_server_info.json")))
+        info_file_path =get_package_path("server_info/hamgnn_server_info.json")
         host = socket.getfqdn()
-        port = self._find_free_port()
+        port = find_free_port()
         logging.info(f"正在启动 Flask 服务器，地址: http://{host}:{port}")
-        self._write_server_info(host, port, info_file_path)
-
+        write_server_info(host, port,self.type,info_file_path)
         # 使用生产级的Waitress服务器来运行应用
         serve(self.app, host="0.0.0.0", port=port)
 
-    # --- 用于HPC环境的辅助方法 ---
-    @staticmethod
-    def _find_free_port():
-        """静态方法：动态查找一个未被占用的端口。"""
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(('', 0)); return s.getsockname()[1]
+    # # --- 用于HPC环境的辅助方法 ---
+    # @staticmethod
+    # def _find_free_port():
+    #     """静态方法：动态查找一个未被占用的端口。"""
+    #     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    #         s.bind(('', 0)); return s.getsockname()[1]
 
-    @staticmethod #TODO:线程安全地自动添加或更新服务器信息文件，以支持多个服务器实例。
-    def _write_server_info(host, port, info_file):
-        """静态方法：将服务器地址信息写入到共享文件。"""
-        server_info = {"host": host, "port": port, "pid": os.getpid()}
-        info_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(info_file, 'w') as f: json.dump(server_info, f)
-        logging.info(f"服务器信息已写入: {info_file}")
+    # @staticmethod #TODO:线程安全地自动添加或更新服务器信息文件，以支持多个服务器实例。
+    # def _write_server_info(host, port, info_file):
+    #     """静态方法：将服务器地址信息写入到共享文件。"""
+    #     server_info = {"host": host, "port": port, "pid": os.getpid(),"type": "HamGNNServer","id": f"{host}:{port}"}
+    #     info_file.parent.mkdir(parents=True, exist_ok=True)
+    #     with open(info_file, 'w') as f: json.dump(server_info, f)
+    #     logging.info(f"服务器信息已写入: {info_file}")
 
 
 if __name__ == '__main__':
