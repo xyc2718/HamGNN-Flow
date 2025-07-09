@@ -159,7 +159,6 @@ class HamGNNCommunicator(BaseCommunicator):
                     f"不支持的已加载数据类型: {type(loaded_object)}。"
                     "只支持Batch, list[Data], dict[any, Data], 或单个Data对象。"
                 )
-                
             # 3. 最终确保返回的对象位于正确的计算设备上
             return final_batch_object.to(device), output_path
         except Exception as e:

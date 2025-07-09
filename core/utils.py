@@ -7,13 +7,13 @@ import socket
 from filelock import FileLock, Timeout
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-
+corePath=Path(__file__).parent
 def find_free_port():
     """静态方法：动态查找一个未被占用的端口。"""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(('', 0)); return s.getsockname()[1]
 def get_package_path(path):
-    return Path(__file__).parent / path
+    return corePath / path
 
 def write_server_info(host: str, port: int, type: str, info_file: Union[str, Path]):
     """

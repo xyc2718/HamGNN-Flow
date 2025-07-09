@@ -42,7 +42,7 @@ def poscar_to_openmxfile(structure, system_name="SystemName",filename="openmxDTA
   #
   #      File Name      
   #
-
+  postprocess       1
   System.CurrentDirectory         ./   # default=./
   System.Name                     {system_name}  # default=SystemName
   DATA.PATH           {DATA_PATH}  # default=../openmx/DFT_DATA19
@@ -58,7 +58,7 @@ def poscar_to_openmxfile(structure, system_name="SystemName",filename="openmxDTA
   scf.SpinPolarization        {SpinPolarization}        # On|Off|NC
   scf.ElectronicTemperature  {ElectronicTemperature}       # default=300 (K)
   scf.energycutoff           {energycutoff}       # default=150 (Ry)
-  scf.maxIter                 {1}         # default=40
+  scf.maxIter                 {maxIter}         # default=40
   scf.EigenvalueSolver        Band      # DC|GDC|Cluster|Band
   scf.Kgrid                  {ScfKgrid[0]} {ScfKgrid[1]} {ScfKgrid[2]}       # means 4x4x4
   scf.Mixing.Type           rmm-diis     # Simple|Rmm-Diis|Gr-Pulay|Kerker|Rmm-Diisk

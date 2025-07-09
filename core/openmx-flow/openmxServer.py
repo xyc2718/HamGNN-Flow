@@ -181,7 +181,7 @@ EOF
 
 # Launch OpenMX (standard build)
 cd {self.workdir}
-mpirun  {self.openmx_postprocess} {self.openmx_input_file}
+mpirun -np {self.process_config.get("openmx_ncpus", 4)} {self.openmx_postprocess} {self.openmx_input_file} > {self.process_config.get("system_name","SystemName")}.std
 
 conda run -n hamgnn python {get_package_path("openmx-flow/utils_openmx/graph_data_gen.py")} \\
         --graph_data_save_path {self.workdir / "graph_data.npz"} \\
@@ -236,7 +236,8 @@ EOF
 
 # Launch OpenMX (standard build)
 cd {self.workdir}
-mpirun  {self.openmx} {self.openmx_input_file}
+mpirun -np {self.process_config.get("openmx_ncpus", 16)} {self.openmx} {self.openmx_input_file}  > {self.process_config.get("system_name","SystemName")}.std
+mpirun -np {self.process_config.get("openmx_ncpus", 16)} {self.openmx_postprocess} {self.openmx_input_file}
         """
         if gen_graph:
             sbatch_script += f"""\n
