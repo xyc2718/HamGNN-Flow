@@ -46,7 +46,7 @@ class BaseCommunicator(abc.ABC):
         pass
 
 
-class Communicator(BaseCommunicator):
+class HamGNNCommunicator(BaseCommunicator):
     """
     HamGNN Server的通信器,处理客户端和服务器之间的所有数据交换。
     methods:
@@ -55,7 +55,14 @@ class Communicator(BaseCommunicator):
         pack_request: 将结构数据打包成HTTP请求体和请求头，返回一个元组，包含请求体和请求头。
         unpack_response: 从Requests响应中解析出最终结果，返回哈密顿量
     """
+    def __init__(self):
+        self.type = "HamGNNCommunicator"  # 通信器类型标识
     def unpack_request(self, request, device: str = 'cpu'):
+        """
+        从Flask请求中解析输入数据，返回一个Graph Batch对象和可选的输出路径。
+        :param request: Flask请求对象,json格式("graph_data_path": "path/to/graph.npz", "output_path": "path/to/output")
+        :param device: 计算设备，默认为'cpu'。
+        """
         logging.info("正在预处理输入数据... ")
         loaded_object=None
         try: 
@@ -162,6 +169,12 @@ class Communicator(BaseCommunicator):
     
 
     def pack_response(self, hamiltonian_output: dict):
+        """
+        将计算结果打包成一个Flask的json响应对象。
+        :param hamiltonian_output: 包含计算结果的字典，必须包含 'hamiltonian' 键,对应hamiltonian张量。
+        以及可选的 'output_path' 键，指定结果保存的路径。
+        :return: Flask响应对象，包含预测结果或错误信息。
+        """
         output_path = hamiltonian_output.get('output_path', None)
         hamiltonian_tensor = hamiltonian_output['hamiltonian']
         # 步骤4: 现在可以安全地对这个张量进行后续处理了
@@ -183,11 +196,60 @@ class Communicator(BaseCommunicator):
         return structure_data, headers
 
     def unpack_response(self, requests_response: RequestsResponse):
-        respoonse_data = requests_response.json()
-        if "output_file" in respoonse_data:
-            return np.load(respoonse_data['output_file'], allow_pickle=True).item()
-        elif "hamiltonian_matrix" in respoonse_data:
-            return np.array(respoonse_data['hamiltonian_matrix'])
+        response_data = requests_response.json()
+        if "output_file" in response_data:
+            return np.load(response_data['output_file'], allow_pickle=True).item()
+        elif "hamiltonian_matrix" in response_data:
+            return np.array(response_data['hamiltonian_matrix'])
+        else:
+            raise ValueError("响应中不包含有效的预测结果。请检查服务器日志以获取更多信息。")
+    
+class OpenmxCommunicator(BaseCommunicator):
+    """
+    Openmx Server的通信器,处理客户端和服务器之间的所有数据交换。
+    methods:
+    """
+    def __init__(self):
+        self.type = "OpenmxCommunicator"  # 通信器类型标识
+    def unpack_request(self, request):
+        """
+        从Flask请求中解析输入数据，返回一个Graph Batch对象和可选的输出路径。
+        :param request: Flask请求对象,json格式("graph_data_path": "path/to/graph.npz", "output_path": "path/to/output")
+        :param device: 计算设备，默认为'cpu'。
+        """
+        logging.info("正在预处理输入数据... ")
+        
+        try: 
+            json_data = request.get_json()
+            if not json_data or 'structure' not in json_data:
+                return jsonify({"error": "请求中必须包含 'structure' 键。"}), 400
+            structure = json_data['structure']
+            graph_para = json_data.get('graph_para', {})
+            current_dir = json_data.get('current_dir', False)
+            return structure, graph_para, current_dir
+        except Exception as e:
+            logging.error(f"预处理输入数据时发生错误: {e}")
+            return jsonify({"error": f"无法处理输入数据: {e}"}), 400        
+    
+    
+
+    def pack_response(self,response_data: dict):
+        """
+        将计算结果打包成一个Flask的json响应对象。
+        """
+        return jsonify(response_data), 200
+        
+    def pack_request(self, structure_data: dict) -> tuple:
+        # JSON请求体就是字典本身，请求头可以为空或指定application/json
+        headers = {'Content-Type': 'application/json'}
+        return structure_data, headers
+
+    def unpack_response(self, requests_response: RequestsResponse):
+        response_data = requests_response.json()
+        if "output_file" in response_data:
+            return np.load(response_data['output_file'], allow_pickle=True).item()
+        elif "hamiltonian_matrix" in response_data:
+            return np.array(response_data['hamiltonian_matrix'])
         else:
             raise ValueError("响应中不包含有效的预测结果。请检查服务器日志以获取更多信息。")
     

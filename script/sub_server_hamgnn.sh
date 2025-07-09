@@ -5,8 +5,8 @@
 #SBATCH --cpus-per-task=12       # 8-4090 <= 12 per gpu   4v100  <=4  per gpu
 #SBATCH --mem=32G               # 8-4090 <= 100G per gpu 4v100  <=50G per gpu 
 #SBATCH --gpus=1                 # 
-#SBATCH --output=./ServerOutput.log  
-#SBATCH --error=./ServerInfo.log  
+#SBATCH --output=./log/ServerOutput.log  
+#SBATCH --error=./log/ServerInfo.log  
 #SBATCH --job-name=Server_HamGNN
 
 ulimit -s unlimited
