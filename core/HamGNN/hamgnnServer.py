@@ -34,7 +34,9 @@ from flask import request, jsonify, Response as FlaskResponse
 import pytorch_lightning as pl
 from ..utils import write_server_info
 from ..utils import find_free_port, get_package_path
-
+import threading
+from functools import wraps
+import time
 LOGGING_LEVEL = logging.DEBUG
 # --- 服务器主类 ---
 class HamGNNServer:
@@ -57,6 +59,28 @@ class HamGNNServer:
         self.app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 设置最大请求体大小为100MB"]
         self._register_routes()
         self.type = "HamGNNServer"  # 服务器类型标识
+
+        self.max_concurrent_jobs = 16
+        self.active_requests = 0
+        self.lock = threading.Lock() # 线程锁，确保计数器在多线程环境下是安全的
+
+    def track_load(self, f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            # --- 请求开始前 ---
+            with self.lock:
+                self.active_requests += 1
+            logging.info(f"接收到新请求，当前活跃请求数: {self.active_requests}")
+            # --- 执行原始的路由函数 ---
+            try:
+                result = f(*args, **kwargs)
+            finally:
+                # --- 请求结束后（无论成功或失败） ---
+                with self.lock:
+                    self.active_requests -= 1
+                logging.info(f"请求处理完毕，当前活跃请求数: {self.active_requests}")
+            return result
+        return decorated_function
 
     def _load_config(self, config_path: str):
         """加载YAML配置文件。"""
@@ -158,8 +182,17 @@ class HamGNNServer:
         def health_check():
             # 检查服务器是否存活以及模型是否已加载
             return jsonify({"status": "ok", "model_loaded": self.gnn_model is not None})
+        
+        @self.app.route("/load_status", methods=['GET'])
+        def load_status():
+            return jsonify({
+                "active_requests": self.active_requests,
+                "max_capacity": self.max_concurrent_jobs,
+                "load_factor": self.active_requests / self.max_concurrent_jobs
+            })
 
         @self.app.route("/predict", methods=['POST'])
+        @self.track_load
         def predict():
             try:
                 # 步骤1: 预处理输入数据
@@ -191,6 +224,21 @@ class HamGNNServer:
                     hamiltonian_output["l1_loss"] = l1_loss
                     hamiltonian_output["l2_loss"] = l2_loss
                     self.app.logger.info(f"平均L1损失: {l1_loss}, 平均L2损失: {l2_loss}")
+                if output_path is not None and output_path != "./":
+                    try:
+                        os.makedirs(output_path)
+                    except FileExistsError:
+                        self.app.logger.warning(f"输出目录已存在: {output_path}")
+                elif output_path == "./":
+                    output_path = os.path.dirname(request.json.get("graph_data_path", None))
+                else:
+                    current_path = get_package_path("")
+                    t = int(time.time())
+                    output_path = os.path.join(current_path, "temp", f"hamgnn_{t}{np.random.randint(100, 999)}")
+                    try:
+                        os.makedirs(output_path)
+                    except FileExistsError:
+                        self.app.logger.warning(f"输出目录已存在: {output_path}")
                     
 
                 hamiltonian_output["output_path"] = output_path if output_path else None

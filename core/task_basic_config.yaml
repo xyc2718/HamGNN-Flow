@@ -1,0 +1,19 @@
+# Celery任务相关的基本配置
+celery_task:
+  # 在遇到网络等可恢复错误时，最大重试次数
+  max_retries: 3
+  # 每次重试前的等待时间（秒）
+  retry_delay_seconds: 300  # 5分钟
+
+# Slurm作业监控相关的配置
+slurm_monitor:
+  # 查询作业状态的轮询间隔（秒）
+  poll_interval_seconds: 5
+  # 等待单个Slurm作业完成的最大超时时间（秒）
+  job_timeout_seconds: 7200 # 2小时
+  max_concurrent_preprocess_jobs: 20  # 最大并发的预处理作业数
+
+# 定时批量轮询任务的配置
+periodic_poller:
+  # 多久执行一次对所有作业的批量状态查询（秒）
+  run_interval_seconds: 10

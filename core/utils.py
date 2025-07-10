@@ -62,3 +62,22 @@ def write_server_info(host: str, port: int, type: str, info_file: Union[str, Pat
         logging.error(f"获取文件锁超时 ({lock_file_path})。另一个进程可能持有锁太久。")
     except Exception as e:
         logging.error(f"写入文件时发生未知错误: {e}")
+
+SERVER_INFO_PATH = get_package_path('server_info')
+
+SERVER_INFO_FILE_DICT = {"openmx":Path(os.path.expanduser("/ssd/work/ycxie/hamgnn/testopenmx/HamGNN-Flow/core/server_info/openmx_server_info.json")),
+                "postprocess":Path(os.path.expanduser("/ssd/work/ycxie/hamgnn/testopenmx/HamGNN-Flow/core/server_info/postprocess_server_info.json")),
+                "hamgnn":Path(os.path.expanduser("/ssd/work/ycxie/hamgnn/testopenmx/HamGNN-Flow/core/server_info/hamgnn_server_info.json")),
+                "orchestrator":Path(os.path.expanduser("/ssd/work/ycxie/hamgnn/testopenmx/HamGNN-Flow/core/server_info/orchestrator_server_info.json")) }
+def get_server_url(type):
+
+    """从共享文件中读取服务器地址和端口。"""
+    if type not in SERVER_INFO_FILE_DICT:
+        raise ValueError(f"未知的服务器类型: {type}。可用类型: {list(SERVER_INFO_FILE_DICT.keys())}")
+    SERVER_INFO_FILE = SERVER_INFO_FILE_DICT[type]
+    if not SERVER_INFO_FILE.exists():
+        raise FileNotFoundError(f"服务器信息文件不存在: {type}:{SERVER_INFO_FILE}\n请确认服务器作业是否已成功运行。")
+    
+    with open(SERVER_INFO_FILE, 'r') as f:
+        info = json.load(f)
+    return f"http://{info['host']}:{info['port']}"

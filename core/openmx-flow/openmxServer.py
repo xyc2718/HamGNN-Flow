@@ -95,10 +95,12 @@ class OpenMXServer:
         """设置后处理配置。"""
         self.process_config.update(process_config)
         self.app.logger.debug(f"设置后处理配置为: {self.process_config}")
-    def set_structure(self, structure,current_dir=True):
+    def set_structure(self, structure,output_path=None):
         """设置结构体，当前目录默认为工作目录。"""
         self.structure = structure
-        if current_dir:
+        if output_path is not None and output_path != "current":
+            self.set_workdir(output_path)
+        elif output_path == "./":
             self.set_workdir(os.path.dirname(self.structure))
         else:
             # current_path = os.path.dirname(os.path.abspath(__file__))
@@ -286,8 +288,8 @@ conda run -n hamgnn python {get_package_path("openmx-flow/utils_openmx/graph_dat
         @self.app.route("/pre_process", methods=['POST'])
         def pre_process():
             try:
-               structure, graph_para, current_dir = self.communicator.unpack_request(request)
-               self.set_structure(structure, current_dir=current_dir)
+               structure, graph_para, output_path = self.communicator.unpack_request(request)
+               self.set_structure(structure, output_path=output_path)
                self.app.logger.debug(f"接收到的结构体: {structure}")
                self.app.logger.debug(f"接收到的图参数: {graph_para}")
                self.set_process_config(graph_para)
@@ -305,8 +307,8 @@ conda run -n hamgnn python {get_package_path("openmx-flow/utils_openmx/graph_dat
         @self.app.route("/graph", methods=['POST'])
         def gen_graph():
             try:
-               structure, graph_para, current_dir = self.communicator.unpack_request(request)
-               self.set_structure(structure, current_dir=current_dir)
+               structure, graph_para, output_path = self.communicator.unpack_request(request)
+               self.set_structure(structure, output_path=output_path)
                self.app.logger.debug(f"接收到的结构体: {structure}")
                self.app.logger.debug(f"接收到的图参数: {graph_para}")
                self.set_process_config(graph_para)
@@ -331,8 +333,8 @@ conda run -n hamgnn python {get_package_path("openmx-flow/utils_openmx/graph_dat
         @self.app.route("/scf", methods=['POST'])
         def scf():
             try:
-                structure, graph_para, current_dir = self.communicator.unpack_request(request)
-                self.set_structure(structure, current_dir=current_dir)
+                structure, graph_para, output_path = self.communicator.unpack_request(request)
+                self.set_structure(structure, output_path=output_path)
                 self.app.logger.debug(f"接收到的结构体: {structure}")
                 self.app.logger.debug(f"接收到的图参数: {graph_para}")
                 self.set_process_config(graph_para)
@@ -345,8 +347,16 @@ conda run -n hamgnn python {get_package_path("openmx-flow/utils_openmx/graph_dat
                 warnings.warn(f"预测过程中发生错误: {e}")
                 traceback.print_exc() 
                 return jsonify({"error": "服务器内部错误，请查看服务器日志了解详情。", "error_type": str(type(e).__name__)}), 500
-            
-        
+        @self.app.route("/api", methods=['GET'])
+        def api():
+            return jsonify({
+                "endpoints": {
+                    "/health": "健康检查，返回服务器状态",
+                    "/pre_process": "预处理请求，转换结构体为OpenMX输入文件并提交计算",
+                    "/graph": "生成图数据请求，转换结构体为图数据",
+                    "/scf": "运行OpenMX SCF计算请求"
+                }
+            }), 200
 
     def run(self):
         """

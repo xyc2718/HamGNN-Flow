@@ -6,7 +6,7 @@
 #SBATCH --mem=32G               # 8-4090 <= 100G per gpu 4v100  <=50G per gpu 
 #SBATCH --output=./log/PostProcessServerOutput.log  
 #SBATCH --error=./log/PostProcessServerINFO.log  
-#SBATCH --job-name=Server_Openmx
+#SBATCH --job-name=Server_PostProcess
 
 ulimit -s unlimited
 module purge
@@ -17,7 +17,7 @@ export LD_LIBRARY_PATH=/ssd/work/ycxie/hamgnn/testopenmx/HamGNN-Flow/core/gsl/li
 ulimit -s unlimited
 # Match OMP threads to CPUs per task
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
-
+conda activate hamgnn
 # Print job and environment info for logging/debugging
 cat << EOF
 ====================== Job Information ======================
