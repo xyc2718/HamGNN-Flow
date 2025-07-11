@@ -16,7 +16,9 @@ from waitress import serve
 from ..utils import write_server_info, find_free_port, get_package_path
 from .utils_openmx.band_cal import band_cal
 from ..communication import PostProcessCommunicator as Communicator, BaseCommunicator
+from functools import wraps
 import argparse
+import threading
 LOGGING_LEVEL= logging.INFO
 POSTPROCESS_CONFIG_PATH = get_package_path("openmx-flow/postprocess_basic_config.yaml")
 class PostProcessServer:
@@ -36,6 +38,9 @@ class PostProcessServer:
         self.app.logger.info(f"PostProcess服务器配置已加载: {self.config}")
         self.app.logger.info(f"默认参数: {self.default_params}")
 
+        self.active_requests = 0
+        self.lock = threading.Lock() # 线程锁，确保计数器在多线程环境下是安全的
+
     def load_basic_config(self):
         """加载PostProcess配置文件。"""
         if not POSTPROCESS_CONFIG_PATH.exists():
@@ -54,7 +59,26 @@ class PostProcessServer:
     def set_process_config(self, process_config={}):
         """设置后处理配置。"""
         self.process_config.update(process_config)
-        self.app.logger.debug(f"设置后处理配置为: {self.process_config}")    
+        self.app.logger.debug(f"设置后处理配置为: {self.process_config}")
+
+    def track_load(self, f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            # --- 请求开始前 ---
+            with self.lock:
+                self.active_requests += 1
+            logging.info(f"接收到新请求，当前活跃请求数: {self.active_requests}")
+            # --- 执行原始的路由函数 ---
+            try:
+                result = f(*args, **kwargs)
+            finally:
+                # --- 请求结束后（无论成功或失败） ---
+                with self.lock:
+                    self.active_requests -= 1
+                logging.info(f"请求处理完毕，当前活跃请求数: {self.active_requests}")
+            return result
+        return decorated_function 
+       
     def _register_routes(self):
         """注册Flask路由，并将它们连接到类实例。"""
     
@@ -63,7 +87,15 @@ class PostProcessServer:
             # 检查服务器是否存活以及模型是否已加载
             return jsonify({"status": "ok"})
         
+        @self.app.route("/load_status", methods=['GET'])
+        def load_status():
+            return jsonify({
+                "active_requests": self.active_requests,
+            })
+        
+        
         @self.app.route("/band_cal", methods=['POST'])
+        @self.track_load
         def band_calculate():
             workdir = None
             try:

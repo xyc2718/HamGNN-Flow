@@ -217,8 +217,7 @@ class OpenmxCommunicator(BaseCommunicator):
     def unpack_request(self, request):
         """
         从Flask请求中解析输入数据，返回一个Graph Batch对象和可选的输出路径。
-        :param request: Flask请求对象,json格式("graph_data_path": "path/to/graph.npz", "output_path": "path/to/output")
-        :param device: 计算设备，默认为'cpu'。
+        :param request: Flask请求对象,json格式("graph_data_path": "path/to/graph.npz", "output_path":
         """
         logging.info("正在预处理输入数据... ")
         

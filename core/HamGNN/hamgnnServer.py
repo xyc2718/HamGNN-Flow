@@ -64,7 +64,7 @@ class HamGNNServer:
         self.type = "HamGNNServer"  # 服务器类型标识
         
 
-        self.max_concurrent_jobs = 16
+        self.max_concurrent_jobs = 12
         self.active_requests = 0
         self.lock = threading.Lock() # 线程锁，确保计数器在多线程环境下是安全的
 

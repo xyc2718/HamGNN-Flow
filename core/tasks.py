@@ -46,9 +46,9 @@ except redis.exceptions.ConnectionError as e:
 celery_app = Celery('tasks',
                     broker='redis://localhost:6379/0',
                     backend='redis://localhost:6379/0')
-celery_app.conf.worker_prefetch_multiplier = 1  # 降低预取数量
-celery_app.conf.task_acks_late = True  # 任务完成后才确认
-celery_app.conf.worker_max_tasks_per_child = 10  # 处理10个任务后重启worker进程
+# celery_app.conf.worker_prefetch_multiplier = 1  # 降低预取数量
+# celery_app.conf.task_acks_late = True  # 任务完成后才确认
+# celery_app.conf.worker_max_tasks_per_child = 10  # 处理10个任务后重启worker进程
 
 
 @celery_app.task
@@ -63,7 +63,7 @@ QUEUE_OPENMX_WAITING = 'openmx_waiting_tasks' # 队列B: openmx等待队列
 QUEUE_HAMGNN_WAITING = 'hamgnn_waiting_tasks' # 队列C: hamgnn等待队列
 QUEUE_POST_WAITING = 'postprocess_waiting_tasks' # 队列D: 后处理等待队列
 QUEUE_COMPLETED = 'completed_tasks'           # 队列E: 完成队列
-
+TIMEOUT=180
 # --- 辅助函数 ---
 def submit_request(process_url, job_ticket):
     """将请求提交到线程池的辅助函数"""
@@ -71,7 +71,7 @@ def submit_request(process_url, job_ticket):
         response = requests.post(
             process_url, 
             json=job_ticket, 
-            timeout=600
+            timeout=TIMEOUT
         )
         response.raise_for_status()
         return response.json()  # 返回响应的JSON内容
@@ -522,21 +522,14 @@ def poll_slurm_and_dispatch():
             
     return f"处理了 {tasks_processed} 个已完成的OpenMX任务"
 
-import concurrent.futures
-import os
+
 
 @celery_app.task
 def dispatch_hamgnn_tasks():
     """
     F3定时任务: 将hamgnn等待队列的任务提交给hamgnnServer,完成后转移到后处理等待队列
-    此版本确保幂等性，即使函数被多次调用也不会导致任务重复处理
+    此版本允许多个进程并行处理不同的任务，每个进程只处理未被锁定的任务
     """
-    # 创建一个任务执行锁，确保同一时间只有一个dispatch_hamgnn_tasks在运行
-    task_lock_key = "dispatch_hamgnn_tasks_lock"
-    if not redis_client.set(task_lock_key, "1", nx=True, ex=300):  # 5分钟锁
-        logger.info("另一个dispatch_hamgnn_tasks实例正在运行，跳过本次执行")
-        return "另一个实例正在运行，跳过执行"
-        
     try:
         # 从配置中获取最大并发数
         max_concurrent = config.get('concurrency', {}).get('max_hamgnn_jobs', 5)
@@ -577,14 +570,21 @@ def dispatch_hamgnn_tasks():
         
         # 存储成功处理的任务数量
         tasks_processed = 0
+        tasks_locked = 0
+        tasks_already_processed = 0
         
-        # 创建线程池
-        with ThreadPoolExecutor(max_workers=min(slots_available, len(sorted_tasks[:slots_available]))) as executor:
+        # 创建线程池 - 只使用当前可用的槽位数量的线程
+        with ThreadPoolExecutor(max_workers=min(slots_available, len(sorted_tasks))) as executor:
             futures = {}  # 使用字典存储future -> task_info的映射
             task_locks = []  # 存储已获取的任务锁，便于后续释放
             
-            # 尝试锁定并提交任务
-            for task_id, task_data, _ in sorted_tasks[:slots_available]:
+            # 尝试锁定并提交任务 - 注意这里不限制处理的任务数量为slots_available
+            # 而是尝试锁定所有任务，只有成功锁定的才会被提交，从而实现细粒度控制
+            for task_id, task_data, _ in sorted_tasks:
+                # 如果已经提交的任务达到可用槽位，则不再继续尝试
+                if len(futures) >= slots_available:
+                    break
+                    
                 # 为每个任务创建一个锁，确保同一任务不会被并发处理
                 task_lock_key = f"hamgnn_processing_lock:{task_id}"
                 
@@ -592,11 +592,14 @@ def dispatch_hamgnn_tasks():
                 processed_key = f"hamgnn_processed:{task_id}"
                 if redis_client.exists(processed_key):
                     logger.info(f"HamGNN任务 {task_id} 已处理过，跳过")
+                    tasks_already_processed += 1
                     continue
                 
-                # 尝试获取锁，如果已被锁定则跳过
+                # 尝试获取锁，如果已被锁定则跳过 - 这里是细粒度控制的关键
+                # nx=True确保只有一个进程能获取锁，其他进程会立即返回False而不是阻塞
                 if not redis_client.set(task_lock_key, "1", nx=True, ex=600):  # 10分钟锁
                     logger.info(f"HamGNN任务 {task_id} 正在被其他进程处理，跳过")
+                    tasks_locked += 1
                     continue
                 
                 # 记录已获取的锁
@@ -725,11 +728,11 @@ def dispatch_hamgnn_tasks():
                     redis_client.decr(current_running_key)
                     redis_client.delete(task_lock_key)
     
-    finally:
-        # 无论如何都要释放主任务锁
-        redis_client.delete(task_lock_key)
+    except Exception as e:
+        logger.error(f"HamGNN调度任务执行时发生未知错误: {e}")
+        return f"执行错误: {str(e)}"
     
-    return f"处理了 {tasks_processed} 个HamGNN任务"
+    return f"处理了 {tasks_processed} 个HamGNN任务，{tasks_locked} 个任务正在被其他进程处理，{tasks_already_processed} 个任务已处理过"
 
 def handle_hamgnn_task_failure(task_id, task_data, workdir, error_message, status_message):
     """处理HamGNN任务失败的辅助函数，集中处理失败逻辑"""
@@ -782,14 +785,8 @@ def cleanup_hamgnn_stale_locks_and_counters():
 def dispatch_postprocess_tasks():
     """
     F4定时任务: 将后处理等待队列的任务提交给postprocessServer,完成后转移到完成队列
-    此版本确保幂等性，即使函数被多次调用也不会导致任务重复处理
+    此版本允许多个进程并行处理不同的任务，每个进程只处理未被锁定的任务
     """
-    # 创建一个任务执行锁，确保同一时间只有一个dispatch_postprocess_tasks在运行
-    task_lock_key = "dispatch_postprocess_tasks_lock"
-    if not redis_client.set(task_lock_key, "1", nx=True, ex=300):  # 5分钟锁
-        logger.info("另一个dispatch_postprocess_tasks实例正在运行，跳过本次执行")
-        return "另一个实例正在运行，跳过执行"
-        
     try:
         # 从配置中获取最大并发数
         max_concurrent = config.get('concurrency', {}).get('max_postprocess_jobs', 10)
@@ -830,14 +827,20 @@ def dispatch_postprocess_tasks():
         
         # 存储成功处理的任务数量
         tasks_processed = 0
+        tasks_locked = 0
+        tasks_already_processed = 0
         
-        # 创建线程池
-        with ThreadPoolExecutor(max_workers=min(slots_available, len(sorted_tasks[:slots_available]))) as executor:
+        # 创建线程池 - 只使用当前可用的槽位数量的线程
+        with ThreadPoolExecutor(max_workers=min(slots_available, len(sorted_tasks))) as executor:
             futures = {}  # 使用字典存储future -> task_info的映射
             task_locks = []  # 存储已获取的任务锁，便于后续释放
             
-            # 尝试锁定并提交任务
-            for task_id, task_data, _ in sorted_tasks[:slots_available]:
+            # 尝试锁定并提交任务 - 遍历所有任务，但只提交未被锁定的任务
+            for task_id, task_data, _ in sorted_tasks:
+                # 如果已经提交的任务达到可用槽位，则不再继续尝试
+                if len(futures) >= slots_available:
+                    break
+                    
                 # 为每个任务创建一个锁，确保同一任务不会被并发处理
                 task_lock_key = f"processing_lock:{task_id}"
                 
@@ -845,11 +848,13 @@ def dispatch_postprocess_tasks():
                 completed_key = f"completed:{task_id}"
                 if redis_client.exists(completed_key):
                     logger.info(f"任务 {task_id} 已处理完成，跳过")
+                    tasks_already_processed += 1
                     continue
                 
                 # 尝试获取锁，如果已被锁定则跳过
                 if not redis_client.set(task_lock_key, "1", nx=True, ex=600):  # 10分钟锁
                     logger.info(f"任务 {task_id} 正在被其他进程处理，跳过")
+                    tasks_locked += 1
                     continue
                 
                 # 记录已获取的锁
@@ -993,11 +998,12 @@ def dispatch_postprocess_tasks():
                     redis_client.decr(current_running_key)
                     redis_client.delete(task_lock_key)
     
-    finally:
-        # 无论如何都要释放主任务锁
-        redis_client.delete(task_lock_key)
+    except Exception as e:
+        logger.error(f"后处理调度任务执行时发生未知错误: {e}")
+        return f"执行错误: {str(e)}"
     
-    return f"处理了 {tasks_processed} 个后处理任务"
+    return f"处理了 {tasks_processed} 个后处理任务，{tasks_locked} 个任务正在被其他进程处理，{tasks_already_processed} 个任务已处理过"
+
 
 def handle_task_failure(task_id, task_data, workdir, error_message, status_message):
     """处理任务失败的辅助函数，集中处理失败逻辑"""
@@ -1060,6 +1066,51 @@ def cleanup_stale_locks_and_counters():
     return "清理完成"
 # --- 定时任务注册 ---
 
+
+@celery_app.task
+def recover_stuck_tasks():
+    """
+    恢复处理中卡住的任务，检查所有带锁但长时间未更新的任务
+    """
+    # 查找所有锁定的任务
+    for task_type in ["hamgnn", "postprocess"]:
+        queue_name = QUEUE_HAMGNN_WAITING if task_type == "hamgnn" else QUEUE_POST_WAITING
+        lock_prefix = f"{task_type}_processing_lock:" if task_type == "hamgnn" else "processing_lock:"
+        
+        # 获取队列中的所有任务
+        tasks = redis_client.hgetall(queue_name)
+        
+        for task_id, task_data_json in tasks.items():
+            # 检查任务是否有锁
+            lock_key = f"{lock_prefix}{task_id}"
+            if redis_client.exists(lock_key):
+                # 检查任务数据中的时间戳
+                try:
+                    task_data = json.loads(task_data_json)
+                    last_update = 0
+                    
+                    # 找到最近的状态更新时间
+                    for log in task_data.get('status_log', []):
+                        if log.get('timestamp', 0) > last_update:
+                            last_update = log.get('timestamp', 0)
+
+                    # 如果超过5分钟未更新，认为任务卡住了
+                    if (time.time() - last_update) > 300:  # 5分钟
+                        logger.warning(f"发现卡住的{task_type}任务: {task_id}，已超过5分钟未更新")
+                        # 释放锁
+                        redis_client.delete(lock_key)
+                        # 重置计数器
+                        counter_key = f"running_{task_type}_jobs"
+                        current = int(redis_client.get(counter_key) or 0)
+                        if current > 0:
+                            redis_client.decr(counter_key)
+                except Exception as e:
+                    logger.error(f"处理卡住任务时出错: {e}")
+                    
+    return "卡住任务恢复完成"
+
+
+
 @celery_app.on_after_configure.connect
 def setup_periodic_tasks(sender, **kwargs):
     """
@@ -1105,3 +1156,18 @@ def setup_periodic_tasks(sender, **kwargs):
         dispatch_postprocess_tasks.s(), 
         name=f'dispatch postprocess tasks every {dispatch_postprocess_interval}s'
     )
+    # sender.add_periodic_task(
+    #     300.0,  # 5分钟
+    #     cleanup_hamgnn_stale_locks_and_counters.s(),
+    #     name='cleanup hamgnn locks every 5min'
+    # )
+    # sender.add_periodic_task(
+    #     300.0,  # 5分钟
+    #     cleanup_stale_locks_and_counters.s(),
+    #     name='cleanup postprocess locks every 5min'
+    # )
+    # sender.add_periodic_task(
+    #     300.0,  # 5分钟
+    #     recover_stuck_tasks.s(),
+    #     name='recover stuck tasks every 5min'
+    # )

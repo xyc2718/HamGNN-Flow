@@ -19,7 +19,8 @@ from utils_openmx.utils import *
 import argparse
 import yaml
 import torch
-
+import logging
+logger = logging.getLogger(__name__)
 def band_cal(input):
     ################################ Input parameters begin ####################
     yrange=input.get('yrange', (-5, 5)) # The range of y axis in the band structure plot
@@ -236,31 +237,36 @@ def band_cal(input):
             
                 # First make a figure object
                 fig, ax = plt.subplots()
-            
-                # specify horizontal axis details
-                ax.set_xlim(k_node[0],k_node[-1])
-                ax.set_xticks(k_node)
-                ax.set_xticklabels(label)
-                for n in range(len(k_node)):
-                    ax.axvline(x=k_node[n], linewidth=0.5, color='k')
-            
-                # plot bands
-                for n in range(norbs):
-                    ax.plot(k_dist, eigen[n])
-                ax.plot(k_dist, nk*[0.0], linestyle='--')
-            
-                # put title
-                ax.set_title("Band structure")
-                ax.set_xlabel("Path in k-space")
-                ax.set_ylabel("Band energy (eV)")
-                ax.set_ylim(yrange)
-                # make an PDF figure of a plot
-                # fig.tight_layout()
-                if is_single_graph:
-                    plt.savefig(os.path.join(save_dir, 'band.png'),dpi=dpi)
-                else:
-                    plt.savefig(os.path.join(save_dir, f'band_{idx+1}.png'),dpi=dpi)#保存图片
-                print('Done.\n')
+                try:
+                
+                    # specify horizontal axis details
+                    ax.set_xlim(k_node[0],k_node[-1])
+                    ax.set_xticks(k_node)
+                    ax.set_xticklabels(label)
+                    for n in range(len(k_node)):
+                        ax.axvline(x=k_node[n], linewidth=0.5, color='k')
+                
+                    # plot bands
+                    for n in range(norbs):
+                        ax.plot(k_dist, eigen[n])
+                    ax.plot(k_dist, nk*[0.0], linestyle='--')
+                
+                    # put title
+                    ax.set_title("Band structure")
+                    ax.set_xlabel("Path in k-space")
+                    ax.set_ylabel("Band energy (eV)")
+                    ax.set_ylim(yrange)
+                    # make an PDF figure of a plot
+                    # fig.tight_layout()
+                    if is_single_graph:
+                        plt.savefig(os.path.join(save_dir, 'band.png'),dpi=dpi)
+                    else:
+                        plt.savefig(os.path.join(save_dir, f'band_{idx+1}.png'),dpi=dpi)#保存图片
+                    print('Done.\n')
+                except Exception as e:
+                    logger.error(f"Error while plotting band structure: {e}")
+                finally:
+                    plt.close(fig)
             
             # Export energy band data
             if is_single_graph:
@@ -414,29 +420,32 @@ def band_cal(input):
 
                     # First make a figure object
                     fig, ax = plt.subplots()
+                    try:
+                        # specify horizontal axis details
+                        ax.set_xlim(k_node[0],k_node[-1])
+                        ax.set_xticks(k_node)
+                        ax.set_xticklabels(label)
+                        for n in range(len(k_node)):
+                            ax.axvline(x=k_node[n], linewidth=0.5, color='k')
 
-                    # specify horizontal axis details
-                    ax.set_xlim(k_node[0],k_node[-1])
-                    ax.set_xticks(k_node)
-                    ax.set_xticklabels(label)
-                    for n in range(len(k_node)):
-                        ax.axvline(x=k_node[n], linewidth=0.5, color='k')
+                        # plot bands
+                        for n in range(norbs):
+                            ax.plot(k_dist, eigen[n])
+                        ax.plot(k_dist, nk*[0.0], linestyle='--')
 
-                    # plot bands
-                    for n in range(norbs):
-                        ax.plot(k_dist, eigen[n])
-                    ax.plot(k_dist, nk*[0.0], linestyle='--')
-
-                    # put title
-                    ax.set_title("Band structure")
-                    ax.set_xlabel("Path in k-space")
-                    ax.set_ylabel("Band energy (eV)")
-                    ax.set_ylim(yrange)
-                    # make an PDF figure of a plot
-                    # fig.tight_layout()
-                    plt.savefig(os.path.join(save_dir, f'band_spin{ispin}_{idx+1}.png'))#保存图片
-                    print('Done.\n')
-
+                        # put title
+                        ax.set_title("Band structure")
+                        ax.set_xlabel("Path in k-space")
+                        ax.set_ylabel("Band energy (eV)")
+                        ax.set_ylim(yrange)
+                        # make an PDF figure of a plot
+                        # fig.tight_layout()
+                        plt.savefig(os.path.join(save_dir, f'band_spin{ispin}_{idx+1}.png'))#保存图片
+                        print('Done.\n')
+                    except Exception as e:
+                        logger.error(f"Error while plotting band structure: {e}")
+                    finally:
+                        plt.close(fig)
                 # Export energy band data
                 text_file = open(os.path.join(save_dir, f'band_spin{ispin}_{idx+1}.dat'), "w")
 
@@ -580,35 +589,38 @@ def band_cal(input):
             if nk > 1 and save_fig and save_fig:
                 # plotting of band structure
                 print('Plotting bandstructure...')
-            
-                # First make a figure object
-                fig, ax = plt.subplots()
-            
-                # specify horizontal axis details
-                ax.set_xlim(k_node[0],k_node[-1])
-                ax.set_xticks(k_node)
-                ax.set_xticklabels(label)
-                for n in range(len(k_node)):
-                    ax.axvline(x=k_node[n], linewidth=0.5, color='k')
-            
-                # plot bands
-                for n in range(norbs):
-                    ax.plot(k_dist, eigen[n])
-                ax.plot(k_dist, nk*[0.0], linestyle='--')
-            
-                # put title
-                ax.set_title("Band structure")
-                ax.set_xlabel("Path in k-space")
-                ax.set_ylabel("Band energy (eV)")
-                ax.set_ylim(yrange)
-                # make an PDF figure of a plot
-                # fig.tight_layout()
-                if is_single_graph:
-                    plt.savefig(os.path.join(save_dir, f'band.png'),dpi=dpi)
-                else:
-                    plt.savefig(os.path.join(save_dir, f'band_{idx+1}.png'),dpi=dpi)#保存图片
-                print('Done.\n')
-            
+                try:
+                    # First make a figure object
+                    fig, ax = plt.subplots()
+                
+                    # specify horizontal axis details
+                    ax.set_xlim(k_node[0],k_node[-1])
+                    ax.set_xticks(k_node)
+                    ax.set_xticklabels(label)
+                    for n in range(len(k_node)):
+                        ax.axvline(x=k_node[n], linewidth=0.5, color='k')
+                
+                    # plot bands
+                    for n in range(norbs):
+                        ax.plot(k_dist, eigen[n])
+                    ax.plot(k_dist, nk*[0.0], linestyle='--')
+                
+                    # put title
+                    ax.set_title("Band structure")
+                    ax.set_xlabel("Path in k-space")
+                    ax.set_ylabel("Band energy (eV)")
+                    ax.set_ylim(yrange)
+                    # make an PDF figure of a plot
+                    # fig.tight_layout()
+                    if is_single_graph:
+                        plt.savefig(os.path.join(save_dir, f'band.png'),dpi=dpi)
+                    else:
+                        plt.savefig(os.path.join(save_dir, f'band_{idx+1}.png'),dpi=dpi)#保存图片
+                    print('Done.\n')
+                except Exception as e:
+                    logger.error(f"Error while plotting band structure: {e}")
+                finally:
+                    plt.close(fig)
             # Export energy band data
             if is_single_graph:
                 text_file = open(os.path.join(save_dir, 'band.dat'), "w")
