@@ -37,6 +37,8 @@ class PostProcessServer:
         self.type = "PostProcessServer"  # 服务器类型标识
         self.app.logger.info(f"PostProcess服务器配置已加载: {self.config}")
         self.app.logger.info(f"默认参数: {self.default_params}")
+        self.device = self.default_params.get("device", "cpu")
+        self.app.logger.info(f"使用的计算设备: {self.device}")
 
         self.active_requests = 0
         self.lock = threading.Lock() # 线程锁，确保计数器在多线程环境下是安全的
@@ -123,7 +125,7 @@ class PostProcessServer:
                 self.process_config["hamiltonian_path"] = hamiltonian_path
                 self.process_config["graph_data_path"] = graph_data_path
                 self.set_process_config(band_para)
-                band_cal(self.process_config)
+                band_cal(self.process_config, device=self.device)
                 self.app.logger.debug(f"process_config: {self.process_config}")
                 self.app.logger.info(f"能带计算完成，结果保存在: {self.workdir}")
                 return self.communicator.pack_response({"status": "success",  "workdir": str(self.workdir), "process_config": self.process_config})
@@ -183,7 +185,8 @@ class PostProcessServer:
         serve(self.app, host="0.0.0.0", port=port,threads=num_threads)
         
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     argument_parser = argparse.ArgumentParser(description='OpenMX Server')
     argument_parser.add_argument('--config', default=PostProcessServer, type=str, help='OpenMX配置文件路径')
     args = argument_parser.parse_args()

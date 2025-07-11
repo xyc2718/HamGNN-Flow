@@ -1,6 +1,6 @@
 '''
 Descripttion: The script to calculat bands from the results of HamGNN
-version: 1.0
+version: 1.1
 Author: Yang Zhong
 Date: 2022-12-20 14:08:52
 LastEditors: Yang Zhong
@@ -21,7 +21,8 @@ import yaml
 import torch
 import logging
 logger = logging.getLogger(__name__)
-def band_cal(input):
+
+def band_cal(input, device='cpu'):
     ################################ Input parameters begin ####################
     yrange=input.get('yrange', (-5, 5)) # The range of y axis in the band structure plot
     nao_max = input["nao_max"] # The maximum number of atomic orbitals, can be 14, 19 or 26
@@ -91,7 +92,7 @@ def band_cal(input):
         elif nao_max == 40:
             basis_def = basis_def_40_abacus
         else:
-            raise NotImplementedError     
+            raise NotImplementedError      
     else:
         raise NotImplementedError
 
@@ -134,18 +135,18 @@ def band_cal(input):
             else:
                 struct.to(filename=os.path.join(save_dir, filename+f'_{idx+1}.cif'))
         
-            # Initialize k_path and lable        
+            # Initialize k_path and lable          
             if auto_mode:
                 kpath_seek = KPathSeek(structure = struct)
                 klabels = []
                 for lbs in kpath_seek.kpath['path']:
                     klabels += lbs
-                # remove adjacent duplicates   
+                # remove adjacent duplicates    
                 res = [klabels[0]]
                 [res.append(x) for x in klabels[1:] if x != res[-1]]
                 klabels = res
                 k_path = [kpath_seek.kpath['kpoints'][k] for k in klabels]
-                label = [rf'${lb}$' for lb in klabels]   
+                label = [rf'${lb}$' for lb in klabels]  
     
             Hsoc_real, Hsoc_imag = np.split(Hsoc, 2, axis=0)
             Hsoc = [Hsoc_real[:, :nao_max, :nao_max]+1.0j*Hsoc_imag[:, :nao_max, :nao_max], 
@@ -159,7 +160,7 @@ def band_cal(input):
             k_vec = k_vec.reshape(-1,3) # shape (nk, 3)
             
             orb_mask = basis_definition[species].reshape(-1) # shape: [natoms*nao_max] 
-            orb_mask = orb_mask[:,None] * orb_mask[None,:]       # shape: [natoms*nao_max, natoms*nao_max]
+            orb_mask = orb_mask[:,None] * orb_mask[None,:]      # shape: [natoms*nao_max, natoms*nao_max]
     
             # cell index
             cell_shift_tuple = [tuple(c) for c in cell_shift.tolist()] # len: (nedges,)
@@ -173,12 +174,12 @@ def band_cal(input):
             eigen = []
             for ik in range(nk):
                 phase = np.zeros((ncells,),dtype=np.complex64) # shape (ncells,)
-                phase[cell_index] = np.exp(2j*np.pi*np.sum(nbr_shift[:,:]*k_vec[ik,None,:], axis=-1))    
+                phase[cell_index] = np.exp(2j*np.pi*np.sum(nbr_shift[:,:]*k_vec[ik,None,:], axis=-1))      
                 na = np.arange(natoms)
-        
+    
                 S_cell = np.zeros((ncells, natoms, natoms, nao_max, nao_max), dtype=np.complex64)
-                S_cell[cell_index, edge_index[0], edge_index[1], :, :] = Soff  
-        
+                S_cell[cell_index, edge_index[0], edge_index[1], :, :] = Soff   
+    
                 SK = np.einsum('ijklm, i->jklm', S_cell, phase) # (natoms, natoms, nao_max, nao_max)
                 SK[na,na,:,:] +=  Son[na,:,:]
                 SK = np.swapaxes(SK,-2,-3) #(natoms, nao_max, natoms, nao_max)
@@ -194,25 +195,27 @@ def band_cal(input):
                     Hon = H[:natoms,:,:]
                     Hoff = H[natoms:,:,:] 
                     H_cell = np.zeros((ncells, natoms, natoms, nao_max, nao_max), dtype=np.complex64)
-                    H_cell[cell_index, edge_index[0], edge_index[1], :, :] = Hoff    
-        
+                    H_cell[cell_index, edge_index[0], edge_index[1], :, :] = Hoff      
+    
                     HK = np.einsum('ijklm, i->jklm', H_cell, phase) # (natoms, natoms, nao_max, nao_max)
                     HK[na,na,:,:] +=  Hon[na,:,:] # shape (nk, natoms, nao_max, nao_max)
-        
+    
                     HK = np.swapaxes(HK,-2,-3) #(nk, natoms, nao_max, natoms, nao_max)
                     HK = HK.reshape(natoms*nao_max, natoms*nao_max)
-        
+    
                     # mask HK
                     HK = HK[orb_mask > 0]
                     norbs = int(math.sqrt(HK.size))
                     HK = HK.reshape(norbs, norbs)
-        
+    
                     HK_list.append(HK)
-        
+    
                 HK = np.block([[HK_list[0],HK_list[1]],[HK_list[2],HK_list[3]]])
             
-                SK_cuda = torch.complex(torch.Tensor(SK.real), torch.Tensor(SK.imag)).unsqueeze(0)
-                HK_cuda = torch.complex(torch.Tensor(HK.real), torch.Tensor(HK.imag)).unsqueeze(0)
+                # Move to specified device
+                SK_cuda = torch.from_numpy(SK).to(device).unsqueeze(0)
+                HK_cuda = torch.from_numpy(HK).to(device).unsqueeze(0)
+                
                 L = torch.linalg.cholesky(SK_cuda)
                 L_t = torch.transpose(L.conj(), dim0=-1, dim1=-2)
                 L_inv = torch.linalg.inv(L)
@@ -247,7 +250,7 @@ def band_cal(input):
                         ax.axvline(x=k_node[n], linewidth=0.5, color='k')
                 
                     # plot bands
-                    for n in range(norbs):
+                    for n in range(norbs*2): # norbs is doubled for SOC
                         ax.plot(k_dist, eigen[n])
                     ax.plot(k_dist, nk*[0.0], linestyle='--')
                 
@@ -273,24 +276,24 @@ def band_cal(input):
                 text_file = open(os.path.join(save_dir, 'band.dat'), "w")
             else:
                 text_file = open(os.path.join(save_dir, f'band_{idx+1}.dat'), "w")
-        
+    
             text_file.write("# k_lable: ")
             for ik in range(len(label)):
                 text_file.write("%s " % label[ik])
             text_file.write("\n")
-        
+    
             text_file.write("# k_node: ")
             for ik in range(len(k_node)):
                 text_file.write("%f  " % k_node[ik])
             text_file.write("\n")
-        
+    
             node_index = node_index[1:]
             for nb in range(len(eigen)):
                 for ik in range(nk):
                     text_file.write("%f    %f\n" % (k_dist[ik], eigen[nb,ik]))
                     if ik in node_index[:-1]:
                         text_file.write('\n')
-                        text_file.write("%f    %f\n" % (k_dist[ik], eigen[nb,ik]))       
+                        text_file.write("%f    %f\n" % (k_dist[ik], eigen[nb,ik]))      
                 text_file.write('\n')
             text_file.close()
 
@@ -334,28 +337,28 @@ def band_cal(input):
             else:
                 struct.to(filename=os.path.join(save_dir, filename+f'_{idx+1}.cif'))
         
-            # Initialize k_path and lable        
+            # Initialize k_path and lable          
             if auto_mode:
                 kpath_seek = KPathSeek(structure = struct)
                 klabels = []
                 for lbs in kpath_seek.kpath['path']:
                     klabels += lbs
-                # remove adjacent duplicates   
+                # remove adjacent duplicates    
                 res = [klabels[0]]
                 [res.append(x) for x in klabels[1:] if x != res[-1]]
                 klabels = res
                 k_path = [kpath_seek.kpath['kpoints'][k] for k in klabels]
-                label = [rf'${lb}$' for lb in klabels]            
-                
+                label = [rf'${lb}$' for lb in klabels]          
+                    
             orb_mask = basis_definition[species].reshape(-1) # shape: [natoms*nao_max] 
-            orb_mask = orb_mask[:,None] * orb_mask[None,:]       # shape: [natoms*nao_max, natoms*nao_max]
-        
+            orb_mask = orb_mask[:,None] * orb_mask[None,:]      # shape: [natoms*nao_max, natoms*nao_max]
+    
             kpts=kpoints_generator(dim_k=3, lat=latt)
             k_vec, k_dist, k_node, lat_per_inv, node_index = kpts.k_path(k_path, nk)
-        
+    
             k_vec = k_vec.dot(lat_per_inv[np.newaxis,:,:]) # shape (nk,1,3)
             k_vec = k_vec.reshape(-1,3) # shape (nk, 3)
-        
+    
             natoms = len(struct)
             
             for ispin in range(2):
@@ -382,18 +385,18 @@ def band_cal(input):
                     SK = SK.reshape(natoms*nao_max, natoms*nao_max)
     
                     # mask HK and SK
-                    #HK = torch.masked_select(HK, orb_mask[idx].repeat(nk,1,1) > 0)
                     HK = HK[orb_mask > 0]
                     norbs = int(math.sqrt(HK.size))
                     HK = HK.reshape(norbs, norbs)
     
-                    #SK = torch.masked_select(SK, orb_mask[idx].repeat(nk,1,1) > 0)
                     SK = SK[orb_mask > 0]
                     norbs = int(math.sqrt(SK.size))
                     SK = SK.reshape(norbs, norbs)
 
-                    SK_cuda = torch.complex(torch.Tensor(SK.real), torch.Tensor(SK.imag)).unsqueeze(0)
-                    HK_cuda = torch.complex(torch.Tensor(HK.real), torch.Tensor(HK.imag)).unsqueeze(0)
+                    # Move to specified device
+                    SK_cuda = torch.from_numpy(SK).to(device).unsqueeze(0)
+                    HK_cuda = torch.from_numpy(HK).to(device).unsqueeze(0)
+
                     L = torch.linalg.cholesky(SK_cuda)
                     L_t = torch.transpose(L.conj(), dim0=-1, dim1=-2)
                     L_inv = torch.linalg.inv(L)
@@ -434,7 +437,7 @@ def band_cal(input):
                         ax.plot(k_dist, nk*[0.0], linestyle='--')
 
                         # put title
-                        ax.set_title("Band structure")
+                        ax.set_title(f"Band structure (Spin {ispin})")
                         ax.set_xlabel("Path in k-space")
                         ax.set_ylabel("Band energy (eV)")
                         ax.set_ylim(yrange)
@@ -465,17 +468,17 @@ def band_cal(input):
                         text_file.write("%f    %f\n" % (k_dist[ik], eigen[nb,ik]))
                         if ik in node_index[:-1]:
                             text_file.write('\n')
-                            text_file.write("%f    %f\n" % (k_dist[ik], eigen[nb,ik]))       
+                            text_file.write("%f    %f\n" % (k_dist[ik], eigen[nb,ik]))      
                     text_file.write('\n')
                 text_file.close()
     
-    else:
+    else: # Non-colinear, non-SOC
         # Calculate the length of H for each structure
         len_H = []
         for i in range(len(graph_dataset)):
             len_H.append(len(graph_dataset[i].Hon))
             len_H.append(len(graph_dataset[i].Hoff))
-               
+                
         if hamiltonian_path is not None:
             H = np.load(hamiltonian_path)
             Hon_all, Hoff_all = [], []
@@ -509,28 +512,28 @@ def band_cal(input):
             else:
                 struct.to(filename=os.path.join(save_dir, filename+f'_{idx+1}.cif'))
         
-            # Initialize k_path and lable        
+            # Initialize k_path and lable          
             if auto_mode:
                 kpath_seek = KPathSeek(structure = struct)
                 klabels = []
                 for lbs in kpath_seek.kpath['path']:
                     klabels += lbs
-                # remove adjacent duplicates   
+                # remove adjacent duplicates    
                 res = [klabels[0]]
                 [res.append(x) for x in klabels[1:] if x != res[-1]]
                 klabels = res
                 k_path = [kpath_seek.kpath['kpoints'][k] for k in klabels]
-                label = [rf'${lb}$' for lb in klabels]            
+                label = [rf'${lb}$' for lb in klabels]          
         
             orb_mask = basis_definition[species].reshape(-1) # shape: [natoms*nao_max] 
-            orb_mask = orb_mask[:,None] * orb_mask[None,:]       # shape: [natoms*nao_max, natoms*nao_max]
-        
+            orb_mask = orb_mask[:,None] * orb_mask[None,:]      # shape: [natoms*nao_max, natoms*nao_max]
+    
             kpts=kpoints_generator(dim_k=3, lat=latt)
             k_vec, k_dist, k_node, lat_per_inv, node_index = kpts.k_path(k_path, nk)
-        
+    
             k_vec = k_vec.dot(lat_per_inv[np.newaxis,:,:]) # shape (nk,1,3)
             k_vec = k_vec.reshape(-1,3) # shape (nk, 3)
-        
+    
             natoms = len(struct)
             eigen = []
             for ik in range(nk):
@@ -555,18 +558,18 @@ def band_cal(input):
                 SK = SK.reshape(natoms*nao_max, natoms*nao_max)
             
                 # mask HK and SK
-                #HK = torch.masked_select(HK, orb_mask[idx].repeat(nk,1,1) > 0)
                 HK = HK[orb_mask > 0]
                 norbs = int(math.sqrt(HK.size))
                 HK = HK.reshape(norbs, norbs)
-                        
-                #SK = torch.masked_select(SK, orb_mask[idx].repeat(nk,1,1) > 0)
+                            
                 SK = SK[orb_mask > 0]
                 norbs = int(math.sqrt(SK.size))
                 SK = SK.reshape(norbs, norbs)
 
-                SK_cuda = torch.complex(torch.Tensor(SK.real), torch.Tensor(SK.imag)).unsqueeze(0)
-                HK_cuda = torch.complex(torch.Tensor(HK.real), torch.Tensor(HK.imag)).unsqueeze(0)
+                # Move to specified device
+                SK_cuda = torch.from_numpy(SK).to(device).unsqueeze(0)
+                HK_cuda = torch.from_numpy(HK).to(device).unsqueeze(0)
+
                 L = torch.linalg.cholesky(SK_cuda)
                 L_t = torch.transpose(L.conj(), dim0=-1, dim1=-2)
                 L_inv = torch.linalg.inv(L)
@@ -586,7 +589,7 @@ def band_cal(input):
             print(f"max_val = {max_val} eV")
             print(f"band gap = {min_con - max_val} eV")
             
-            if nk > 1 and save_fig and save_fig:
+            if nk > 1 and save_fig:
                 # plotting of band structure
                 print('Plotting bandstructure...')
                 try:
@@ -626,32 +629,36 @@ def band_cal(input):
                 text_file = open(os.path.join(save_dir, 'band.dat'), "w")
             else:
                 text_file = open(os.path.join(save_dir, f'band_{idx+1}.dat'), "w")
-        
+    
             text_file.write("# k_lable: ")
             for ik in range(len(label)):
                 text_file.write("%s " % label[ik])
             text_file.write("\n")
-        
+    
             text_file.write("# k_node: ")
             for ik in range(len(k_node)):
                 text_file.write("%f  " % k_node[ik])
             text_file.write("\n")
-        
+    
             node_index = node_index[1:]
             for nb in range(len(eigen)):
                 for ik in range(nk):
                     text_file.write("%f    %f\n" % (k_dist[ik], eigen[nb,ik]))
                     if ik in node_index[:-1]:
                         text_file.write('\n')
-                        text_file.write("%f    %f\n" % (k_dist[ik], eigen[nb,ik]))       
+                        text_file.write("%f    %f\n" % (k_dist[ik], eigen[nb,ik]))      
                 text_file.write('\n')
             text_file.close()
 
 if __name__ == '__main__':
-    args= argparse.ArgumentParser(description='Band calculation from HamGNN results')
-    args.add_argument('--input', type=str, required=True, help='Path to the input YAML file')
-    args = args.parse_args()
+    parser = argparse.ArgumentParser(description='Band calculation from HamGNN results')
+    parser.add_argument('--input', type=str, required=True, help='Path to the input YAML file')
+    parser.add_argument('--device', type=str, default='cpu', help='Device for PyTorch calculations (e.g., "cpu", "cuda", "cuda:0")')
+    args = parser.parse_args()
+    
     with open(args.input, 'r') as f:
-        input = yaml.safe_load(f)
-        band_cal(input)
+        input_params = yaml.safe_load(f)
+    
+    # Add device from command line arguments to the parameters
 
+    band_cal(input_params, device=args.device)
