@@ -1,19 +1,32 @@
-# Celery任务相关的基本配置
-celery_task:
-  # 在遇到网络等可恢复错误时，最大重试次数
-  max_retries: 3
-  # 每次重试前的等待时间（秒）
-  retry_delay_seconds: 300  # 5分钟
+# HamGNN工作流调度系统配置文件
 
-# Slurm作业监控相关的配置
-slurm_monitor:
-  # 查询作业状态的轮询间隔（秒）
-  poll_interval_seconds: 5
-  # 等待单个Slurm作业完成的最大超时时间（秒）
-  job_timeout_seconds: 7200 # 2小时
-  max_concurrent_preprocess_jobs: 20  # 最大并发的预处理作业数
+# 工作流基本配置
+workflow:
+  base_work_dir: "/home/user/hamgnn/workdir"  # 工作目录基础路径
+  log_level: "INFO"                           # 日志级别
+  cleanup_after_days: 7                       # 自动清理多少天前的工作目录
 
-# 定时批量轮询任务的配置
-periodic_poller:
-  # 多久执行一次对所有作业的批量状态查询（秒）
-  run_interval_seconds: 10
+# 定时任务运行间隔配置（单位：秒）
+periodic_tasks:
+  dispatch_openmx_interval: 2.0              # F1任务：提交openmx作业的检查间隔
+  poll_slurm_interval: 5.0                   # F2任务：轮询Slurm作业状态的间隔
+  dispatch_hamgnn_interval: 4.0               # F3任务：AI模型推理任务的检查间隔
+  dispatch_postprocess_interval: 5.0         # F4任务：提交后处理作业的检查间隔
+
+# 各处理阶段的并发限制
+concurrency:
+  max_openmx_jobs: 64                         # 同时运行的openmx作业最大数量
+  max_hamgnn_jobs: 12                          # 同时运行的AI推理任务最大数量
+  max_postprocess_jobs: 64                    # 同时运行的后处理作业最大数量
+
+# 故障恢复配置
+recovery:
+  auto_restart_failed_jobs: true              # 自动重启失败的作业
+  max_retries: 1                              # 最大重试次数
+  retry_delay: 300                            # 重试延迟（秒）
+
+# 系统监控配置
+monitoring:
+  collect_metrics: true                       # 是否收集系统指标
+  metrics_interval: 60                        # 指标收集间隔（秒）
+  queue_length_warning: 50                    # 队列长度警告阈值

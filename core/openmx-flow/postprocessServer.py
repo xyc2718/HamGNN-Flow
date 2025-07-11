@@ -17,7 +17,7 @@ from ..utils import write_server_info, find_free_port, get_package_path
 from .utils_openmx.band_cal import band_cal
 from ..communication import PostProcessCommunicator as Communicator, BaseCommunicator
 import argparse
-LOGGING_LEVEL= logging.DEBUG
+LOGGING_LEVEL= logging.INFO
 POSTPROCESS_CONFIG_PATH = get_package_path("openmx-flow/postprocess_basic_config.yaml")
 class PostProcessServer:
     def __init__(self, config_path=None):
@@ -135,7 +135,7 @@ class PostProcessServer:
 
         
 
-    def run(self):
+    def run(self,num_threads=4):
         """
         启动服务器，包括HPC的服务发现功能。
         这个方法对应于服务器的“运行”阶段。
@@ -148,7 +148,7 @@ class PostProcessServer:
         write_server_info(host, port, self.type,info_file_path)
         self.app.logger.debug(f"服务器信息已写入: {info_file_path}")
         # 使用生产级的Waitress服务器来运行应用
-        serve(self.app, host="0.0.0.0", port=port)
+        serve(self.app, host="0.0.0.0", port=port,threads=num_threads)
         
 
 if __name__ == '__main__':
@@ -156,4 +156,5 @@ if __name__ == '__main__':
     argument_parser.add_argument('--config', default=PostProcessServer, type=str, help='OpenMX配置文件路径')
     args = argument_parser.parse_args()
     openmx_server = PostProcessServer(config_path=args.config)
-    openmx_server.run()
+    num_threads = openmx_server.config.get('num_threads', 4)  # 从配置中获取线程数
+    openmx_server.run(num_threads=num_threads)

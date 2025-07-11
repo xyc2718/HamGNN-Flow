@@ -1,9 +1,10 @@
 #!/bin/bash
 #SBATCH --partition chu       
 #SBATCH --nodes=1                     
-#SBATCH --ntasks=1               # 
+#SBATCH --ntasks=1    
+#SBATCH --nodelist=c2           # 
 #SBATCH --cpus-per-task=12       # 8-4090 <= 12 per gpu   4v100  <=4  per gpu
-#SBATCH --mem=16G               # 8-4090 <= 100G per gpu 4v100  <=50G per gpu 
+#SBATCH --mem=12G               # 8-4090 <= 100G per gpu 4v100  <=50G per gpu 
 #SBATCH --output=./log/OrchestratorOutput.log  
 #SBATCH --error=./log/OrchestratorINFO.log  
 #SBATCH --job-name=Server_Orchestrator
@@ -11,10 +12,9 @@
 ulimit -s unlimited
 module purge
 source /ssd/app/anaconda3/etc/profile.d/conda.sh
-module load compiler/oneAPI/2023.2.0
-export LD_LIBRARY_PATH=/ssd/work/ycxie/hamgnn/testopenmx/HamGNN-Flow/core/gsl/lib:$LD_LIBRARY_PATH
 # Remove stack size limit to avoid overflow in parallel runs
 ulimit -s unlimited
+conda activate hamgnn
 # Match OMP threads to CPUs per task
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
@@ -34,7 +34,5 @@ Job Start Time:   $(date +"%Y-%m-%d %H:%M:%S")
 
 EOF
 python --version
-echo "Starting Redis Server..."
-redis-server & 
 echo "Starting Orchestrator Server..."
 python -m core.orchestrator_server

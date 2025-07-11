@@ -37,7 +37,10 @@ from ..utils import find_free_port, get_package_path
 import threading
 from functools import wraps
 import time
-LOGGING_LEVEL = logging.DEBUG
+import yaml
+LOGGING_LEVEL = logging.INFO
+BASIC_CONFIG_PATH = get_package_path("/HamGNN/hamgnn_basic_config.yaml")
+
 # --- 服务器主类 ---
 class HamGNNServer:
     def __init__(self, args):
@@ -59,6 +62,7 @@ class HamGNNServer:
         self.app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 设置最大请求体大小为100MB"]
         self._register_routes()
         self.type = "HamGNNServer"  # 服务器类型标识
+        
 
         self.max_concurrent_jobs = 16
         self.active_requests = 0
@@ -84,6 +88,8 @@ class HamGNNServer:
 
     def _load_config(self, config_path: str):
         """加载YAML配置文件。"""
+        # self.basic_config = yaml.safe_load(open(BASIC_CONFIG_PATH, 'r', encoding='utf-8'))
+        # self.app.logger.debug(f"加载基本配置: {BASIC_CONFIG_PATH}")
         config = read_config(config_file_name=config_path)
         hostname = socket.getfqdn(socket.gethostname())
         config.setup.hostname = hostname
@@ -251,7 +257,7 @@ class HamGNNServer:
             
         
 
-    def run(self):
+    def run(self,num_threads=4):
         """
         启动服务器，包括HPC的服务发现功能。
         这个方法对应于服务器的“运行”阶段。
@@ -262,7 +268,7 @@ class HamGNNServer:
         self.app.logger.info(f"正在启动 Flask 服务器，地址: http://{host}:{port}")
         write_server_info(host, port,self.type,info_file_path)
         # 使用生产级的Waitress服务器来运行应用
-        serve(self.app, host="0.0.0.0", port=port)
+        serve(self.app, host="0.0.0.0", port=port,threads=num_threads)
 
     # # --- 用于HPC环境的辅助方法 ---
     # @staticmethod
@@ -290,8 +296,11 @@ if __name__ == '__main__':
         help='【仅供测试使用】禁用严格的模型权重加载模式。'
     )
     args = parser.parse_args()
+    BASIC_CONFIG_PATH= get_package_path("HamGNN/hamgnn_basic_config.yaml")
+    basic_config= yaml.safe_load(open(BASIC_CONFIG_PATH, 'r', encoding='utf-8'))
+    num_threads = basic_config.get('num_threads', 4)  # 从基本配置中获取线程数
 
     # 1. 创建一个服务器实例。所有的设置工作都在构造函数中完成。
     server = HamGNNServer(args)
     # 2. 运行服务器。
-    server.run()
+    server.run(num_threads=num_threads)

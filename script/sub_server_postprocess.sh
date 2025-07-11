@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --partition 4v100       
-#SBATCH --nodes=1                     
+#SBATCH --partition chu       
+#SBATCH --nodes=1
 #SBATCH --ntasks=1               # 
-#SBATCH --cpus-per-task=12       # 8-4090 <= 12 per gpu   4v100  <=4  per gpu
-#SBATCH --mem=32G               # 8-4090 <= 100G per gpu 4v100  <=50G per gpu 
+#SBATCH --cpus-per-task=64       # 8-4090 <= 12 per gpu   4v100  <=4  per gpu
+#SBATCH --mem=64G               # 8-4090 <= 100G per gpu 4v100  <=50G per gpu 
 #SBATCH --output=./log/PostProcessServerOutput.log  
 #SBATCH --error=./log/PostProcessServerINFO.log  
 #SBATCH --job-name=Server_PostProcess

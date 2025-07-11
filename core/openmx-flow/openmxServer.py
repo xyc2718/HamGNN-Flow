@@ -18,7 +18,7 @@ from .utils_openmx.graph_data_gen import graph_data_gen
 from .utils_openmx.poscar2openmx import poscar_to_openmxfile
 from ..communication import OpenmxCommunicator as Communicator, BaseCommunicator
 import argparse
-LOGGING_LEVEL= logging.DEBUG
+LOGGING_LEVEL= logging.INFO
 OPENMX_CONFIG_PATH = get_package_path("openmx-flow/openmx_basic_config.yaml")
 class OpenMXServer:
     def __init__(self, config_path=None):
@@ -98,7 +98,11 @@ class OpenMXServer:
     def set_structure(self, structure,output_path=None):
         """设置结构体，当前目录默认为工作目录。"""
         self.structure = structure
-        if output_path is not None and output_path != "current":
+        if output_path is not None and output_path != "./":
+            try:
+                os.mkdir(output_path)
+            except FileExistsError:
+                logging.warning(f"工作目录已存在: {output_path}")
             self.set_workdir(output_path)
         elif output_path == "./":
             self.set_workdir(os.path.dirname(self.structure))
@@ -296,7 +300,6 @@ conda run -n hamgnn python {get_package_path("openmx-flow/utils_openmx/graph_dat
                self.app.logger.debug(f"使用图参数: {self.process_config}")
                self.transform_structure()
                job_id=self.run_openmx_submit()
-               self.app.logger.info(f"OpenMX计算作业已提交，Job ID: {job_id}")
                return self.communicator.pack_response({"job_id": job_id, "workdir": str(self.workdir),
                                                        "process_config": self.process_config,"job_type": "post_process"})
             except Exception as e:
@@ -326,7 +329,7 @@ conda run -n hamgnn python {get_package_path("openmx-flow/utils_openmx/graph_dat
                return self.communicator.pack_response({"job_id":None, "workdir": str(self.workdir),
                                                        "process_config": self.process_config,"job_type": "graph"})
             except Exception as e:
-                warnings.warn(f"预测过程中发生错误: {e}")
+                warnings.warn(f"openmx处理过程中发生错误: {e}")
                 traceback.print_exc() 
                 return jsonify({"error": "服务器内部错误，请查看服务器日志了解详情。", "error_type": str(type(e).__name__)}), 500
             
@@ -340,7 +343,7 @@ conda run -n hamgnn python {get_package_path("openmx-flow/utils_openmx/graph_dat
                 self.set_process_config(graph_para)
                 self.transform_structure()
                 job_id=self.run_openmx_scf(gen_graph=self.process_config.get("gen_graph", True))
-                self.app.logger.info(f"OpenMX计算作业已提交，Job ID: {job_id}")
+
                 return self.communicator.pack_response({"job_id": job_id, "workdir": str(self.workdir),
                                                         "process_config": self.process_config,"job_type": "scf"})
             except Exception as e:
@@ -358,7 +361,7 @@ conda run -n hamgnn python {get_package_path("openmx-flow/utils_openmx/graph_dat
                 }
             }), 200
 
-    def run(self):
+    def run(self,num_threads):
         """
         启动服务器，包括HPC的服务发现功能。
         这个方法对应于服务器的“运行”阶段。
@@ -371,7 +374,7 @@ conda run -n hamgnn python {get_package_path("openmx-flow/utils_openmx/graph_dat
         write_server_info(host, port, self.type,info_file_path)
         self.app.logger.debug(f"服务器信息已写入: {info_file_path}")
         # 使用生产级的Waitress服务器来运行应用
-        serve(self.app, host="0.0.0.0", port=port)
+        serve(self.app, host="0.0.0.0", port=port,threads=num_threads)
         
 
 if __name__ == '__main__':
@@ -379,4 +382,5 @@ if __name__ == '__main__':
     argument_parser.add_argument('--config', default=OPENMX_CONFIG_PATH, type=str, help='OpenMX配置文件路径')
     args = argument_parser.parse_args()
     openmx_server = OpenMXServer(config_path=args.config)
-    openmx_server.run()
+    num_threads = openmx_server.config.get('num_threads', 4)  # 从配置中获取线程数
+    openmx_server.run(num_threads)  # 默认使用4个线程

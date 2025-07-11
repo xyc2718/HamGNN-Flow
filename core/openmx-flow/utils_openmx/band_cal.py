@@ -255,7 +255,7 @@ def band_cal(input):
                 ax.set_ylabel("Band energy (eV)")
                 ax.set_ylim(yrange)
                 # make an PDF figure of a plot
-                fig.tight_layout()
+                # fig.tight_layout()
                 if is_single_graph:
                     plt.savefig(os.path.join(save_dir, 'band.png'),dpi=dpi)
                 else:
@@ -433,7 +433,7 @@ def band_cal(input):
                     ax.set_ylabel("Band energy (eV)")
                     ax.set_ylim(yrange)
                     # make an PDF figure of a plot
-                    fig.tight_layout()
+                    # fig.tight_layout()
                     plt.savefig(os.path.join(save_dir, f'band_spin{ispin}_{idx+1}.png'))#保存图片
                     print('Done.\n')
 
@@ -602,7 +602,7 @@ def band_cal(input):
                 ax.set_ylabel("Band energy (eV)")
                 ax.set_ylim(yrange)
                 # make an PDF figure of a plot
-                fig.tight_layout()
+                # fig.tight_layout()
                 if is_single_graph:
                     plt.savefig(os.path.join(save_dir, f'band.png'),dpi=dpi)
                 else:

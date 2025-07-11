@@ -187,7 +187,7 @@ class HamGNNCommunicator(BaseCommunicator):
             l2_loss= hamiltonian_output.get('l2_loss', None)
             if l1_loss is None or l2_loss is None:
                 json.dump({"l1_loss": l1_loss, "l2_loss": l2_loss}, open(output_file.parent / "loss.json", "w"))
-            return jsonify({"output_file": str(output_file),"l1_loss":l1_loss,"l2_loss":l2_loss, "status": "success"}), 200
+            return jsonify({"output_file": str(output_file),"l1_loss":l1_loss,"l2_loss":l2_loss, "workdir":output_path,"status": "success"}), 200
         else:
             # 如果没有提供输出路径，则直接返回结果
             result = hamiltonian_tensor.cpu().numpy().tolist()
