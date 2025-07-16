@@ -1,0 +1,25 @@
+read_openmx_path: null  # HamGNN-Flow/core/bin/read_openmx
+gsl_path: null  # HamGNN-Flow/core/gsl
+openmx_path: null  # HamGNN-Flow/core/bin/openmx
+openmx_module: 'compiler/oneAPI/2023.2.0'
+conda_source: '/ssd/app/anaconda3/etc/profile.d/conda.sh'
+conda_env: 'hamgnn'
+DATA_PATH: null  # HamGNN-Flow/core/openmx-flow/data
+num_threads: 10  # OpenMX服务器使用的线程数
+default_input_parameters:
+    system_name: "SystemName"
+    DosKgrid: [4, 4, 4]
+    ScfKgrid: [4, 4, 4]
+    SpinPolarization: "off"
+    XcType: "GGA-PBE"
+    ElectronicTemperature: 100
+    energycutoff: 150
+    maxIter: 1
+    ScfCriterion: 1.0e-6
+    openmx_partition: "chu"
+    openmx_ncpus: 4
+    nao_max: 26
+    soc_switch: false
+
+
+ 

@@ -15,7 +15,8 @@ from typing import Tuple, Union, Optional, List, Set, Dict, Any
 from pymatgen.core.periodic_table import Element
 from ase import Atoms
 import re
-
+import logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 def ordered_set(sequence):
     seen = set()
     return [x for x in sequence if not (x in seen or seen.add(x))]
@@ -307,8 +308,10 @@ class kpoints_generator:
             # store which directions are the periodic ones
             self._per=per
         
+   # -------------------- 修复后的 k_path 函数 (最终版) --------------------
     def k_path(self,kpts,nk,report=True):
-    
+        logging.info("this the new k_path function")
+
         # processing of special cases for kpts
         if kpts=='full':
             # full Brillouin zone for 1D case
@@ -321,7 +324,7 @@ class kpoints_generator:
             k_list=np.array([[0.],[0.5]])
         else:
             k_list=np.array(kpts)
-    
+
         # in 1D case if path is specified as a vector, convert it to an (n,1) array
         if len(k_list.shape)==1 and self._dim_k==1:
             k_list=np.array([k_list]).T
@@ -338,11 +341,11 @@ class kpoints_generator:
 
         # number of nodes
         n_nodes=k_list.shape[0]
-    
+
         # extract the lattice vectors from the TB model
         lat_per=np.copy(self._lat)
         # choose only those that correspond to periodic directions
-        lat_per=lat_per[self._per]    
+        lat_per=lat_per[self._per]
         # compute k_space metric tensor
         k_metric = np.linalg.inv(np.dot(lat_per,lat_per.T))
 
@@ -354,20 +357,47 @@ class kpoints_generator:
             dk = k_list[n]-k_list[n-1]
             dklen = np.sqrt(np.dot(dk,np.dot(k_metric,dk)))
             k_node[n]=k_node[n-1]+dklen
-    
+        
+        # ！！！！！！！！！！ 修复开始 ！！！！！！！！！！
         # Find indices of nodes in interpolated list
         node_index=[0]
         for n in range(1,n_nodes-1):
-            frac=k_node[n]/k_node[-1]
-            node_index.append(int(round(frac*(nk-1))))
-        node_index.append(nk-1)
-    
+            frac = k_node[n] / k_node[-1]
+            new_index = int(round(frac * (nk - 1)))
+
+            logging.info(f">>> [DEBUG-STEP-1] In corrected logic block. n={n}, raw_new_index={new_index}")
+            # 确保新索引至少比前一个大1，防止分配到相同索引
+            if new_index <= node_index[-1]:
+                new_index = node_index[-1] + 1
+            node_index.append(new_index)
+        
+        # 确保最后一个索引是 nk-1 并且比前一个大
+        if n_nodes > 1:
+            if (nk - 1) <= node_index[-1]:
+                node_index.append(node_index[-1] + 1)
+            else:
+                node_index.append(nk-1)
+        
+        # 如果路径点过多导致索引超出范围，则进行裁剪
+        if node_index[-1] >= nk:
+            print("Warning: Too many k-path nodes for the given nk. Some segments might be very short.")
+            # 将超出部分的索引修正为 nk-1
+            node_index = [min(i, nk - 1) for i in node_index]
+            # 再次确保严格递增，去除重复
+            final_indices = []
+            for i in node_index:
+                if not final_indices or i > final_indices[-1]:
+                    final_indices.append(i)
+            node_index = final_indices
+
+        # ！！！！！！！！！！ 修复结束 ！！！！！！！！！！
+        
         # initialize two arrays temporarily with zeros
-        #   array giving accumulated k-distance to each k-point
+        #  array giving accumulated k-distance to each k-point
         k_dist=np.zeros(nk,dtype=float)
-        #   array listing the interpolated k-points    
+        #  array listing the interpolated k-points
         k_vec=np.zeros((nk,self._dim_k),dtype=float)
-    
+        
         # go over all kpoints
         k_vec[0]=k_list[0]
         for n in range(1,n_nodes):
@@ -377,11 +407,15 @@ class kpoints_generator:
             kd_f=k_node[n]
             k_i=k_list[n-1]
             k_f=k_list[n]
+            # 如果 n_i 和 n_f 由于修正变得相等，跳过该段
+            if n_f == n_i:
+                continue
             for j in range(n_i,n_f+1):
                 frac=float(j-n_i)/float(n_f-n_i)
                 k_dist[j]=kd_i+frac*(kd_f-kd_i)
                 k_vec[j]=k_i+frac*(k_f-k_i)
-    
+        
+        # 以下为报告部分，保持不变
         if report==True:
             if self._dim_k==1:
                 print(' Path in 1D BZ defined by nodes at '+str(k_list.flatten()))
@@ -393,22 +427,24 @@ class kpoints_generator:
                 print('k-space metric tensor\n', k_metric)
                 print('internal coordinates of nodes\n', k_list)
                 if (lat_per.shape[0]==lat_per.shape[1]):
-                    # lat_per is invertible
                     lat_per_inv=np.linalg.inv(lat_per).T
                     print('reciprocal-space lattice vectors\n', lat_per_inv)
-                    # cartesian coordinates of nodes
                     kpts_cart=np.tensordot(k_list,lat_per_inv,axes=1)
                     print('cartesian coordinates of nodes\n',kpts_cart)
                 print('list of segments:')
                 for n in range(1,n_nodes):
                     dk=k_node[n]-k_node[n-1]
-                    dk_str=_nice_float(dk,7,5)
-                    print('  length = '+dk_str+'  from ',k_list[n-1],' to ',k_list[n])
+                    # _nice_float may not be defined, so let's use a standard format
+                    print(f'  length = {dk:.5f}  from {k_list[n-1]} to {k_list[n]}')
                 print('node distance list:', k_node)
                 print('node index list:   ', np.array(node_index))
                 np.set_printoptions(precision=original["precision"])
                 print('----- k_path report end ------------')
             print()
+        
+        # 返回值前，确保 lat_per_inv 已定义
+        if 'lat_per_inv' not in locals():
+            lat_per_inv = None # Or compute it if necessary
 
         return (k_vec,k_dist,k_node,lat_per_inv, node_index)
 

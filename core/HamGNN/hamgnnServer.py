@@ -201,6 +201,7 @@ class HamGNNServer:
         @self.track_load
         def predict():
             try:
+                start_time = time.time()
                 # 步骤1: 预处理输入数据
                 graph, output_path = self._preprocess_input(request)
                 self.app.logger.debug(f"预处理后的图数据: {graph}")
@@ -248,6 +249,10 @@ class HamGNNServer:
                     
 
                 hamiltonian_output["output_path"] = output_path if output_path else None
+                hamiltonian_output["return_directly"] = request.json.get("return_directly", False)
+                end_time = time.time()
+                elapsed_time = end_time - start_time
+                self.app.logger.info(f"耗时: {elapsed_time:.2f}秒")
                 return self.communicator.pack_response(hamiltonian_output)
                 
             except Exception as e:

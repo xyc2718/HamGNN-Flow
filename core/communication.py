@@ -66,58 +66,24 @@ class HamGNNCommunicator(BaseCommunicator):
         logging.info("正在预处理输入数据... ")
         loaded_object=None
         try: 
-            # 检查请求中是否直接包含 .npz 文件（通过 multipart/form-data 上传）
-            if 'graph' in request.files:
-                #TODO:改成通过2进制流发送graph_data
-                #FIXME 现在似乎找不到这个文件，报错：
-                #                 2025-07-02 00:05:38,224 - ERROR - 预处理输入数据时发生错误: 'NoneType' object has no attribute 'open'
-                # Traceback (most recent call last):
-                #   File "/ssd/work/ycxie/hamgnn/testopenmx/HamGNN-Flow/core/communication.py", line 63, in unpack_request
-                #     loaded_object = npz['graph'].item()
-                #   File "/ssd/work/ycxie/.conda_envs/hamgnn/lib/python3.9/site-packages/numpy/lib/npyio.py", line 251, in __getitem__
-                #     bytes = self.zip.open(key)
-                # AttributeError: 'NoneType' object has no attribute 'open'
+            input_data = request.get_json()
+            if not input_data or 'graph_data_path' not in input_data:
+                raise ValueError("请求中必须包含上传的 .npz 文件或 graph_data_path")
+            
+            graph_data_path = input_data['graph_data_path']
+            if not graph_data_path:
+                raise ValueError("graph_data_path 不能为空")   
+            graph_data_path = input_data.get("graph_data_path", None)
 
-                # During handling of the above exception, another exception occurred:
-
-                # Traceback (most recent call last):
-                #   File "/ssd/work/ycxie/hamgnn/testopenmx/HamGNN-Flow/core/HamGNN/server.py", line 156, in predict
-                #     graph, output_path = self._preprocess_input(request)
-                #   File "/ssd/work/ycxie/hamgnn/testopenmx/HamGNN-Flow/core/HamGNN/server.py", line 142, in _preprocess_input
-                #     return self.communicator.unpack_request(input_request, self.device)
-                #   File "/ssd/work/ycxie/hamgnn/testopenmx/HamGNN-Flow/core/communication.py", line 132, in unpack_request
-                #     raise ValueError(f"无法处理输入数据: {e}")
-                # ValueError: 无法处理输入数据: 'NoneType' object has no attribute 'open'
-                
-                npz_file = request.files['graph']
-                # 修复：转换为可寻址的 BytesIO
-                file_stream = io.BytesIO(npz_file.read())
-                with np.load(file_stream, allow_pickle=True) as npz:
-                    if 'graph' not in npz:
-                        raise KeyError("上传的 .npz 文件中缺少 'graph' 数据")
+            if not graph_data_path:
+                raise ValueError("输入数据中必须包含 'graph_data_path' 键。")
+            with np.load(graph_data_path, allow_pickle=True) as npz:
+                # 假设数据总是存在'graph'这个键下
+                if 'graph' not in npz:
+                    raise KeyError(f"在 {graph_data_path} 中找不到必需的 'graph' 数据。")
                 loaded_object = npz['graph'].item()
-                output_path = request.get_json().get("output_path", None)
-                logging.debug("communicator 获取graph.npz文件")
-            # 否则从 JSON 中读取 graph_data_path
-            else:
-                input_data = request.get_json()
-                if not input_data or 'graph_data_path' not in input_data:
-                    raise ValueError("请求中必须包含上传的 .npz 文件或 graph_data_path")
-                
-                graph_data_path = input_data['graph_data_path']
-                if not graph_data_path:
-                    raise ValueError("graph_data_path 不能为空")   
-                graph_data_path = input_data.get("graph_data_path", None)
-
-                if not graph_data_path:
-                    raise ValueError("输入数据中必须包含 'graph_data_path' 键。")
-                with np.load(graph_data_path, allow_pickle=True) as npz:
-                    # 假设数据总是存在'graph'这个键下
-                    if 'graph' not in npz:
-                        raise KeyError(f"在 {graph_data_path} 中找不到必需的 'graph' 数据。")
-                    loaded_object = npz['graph'].item()
-                logging.info(f"communicator 从路径加载 .npz 文件: {graph_data_path}")
-                output_path = input_data.get("output_path", None)
+            logging.info(f"communicator 从路径加载 .npz 文件: {graph_data_path}")
+            output_path = input_data.get("output_path", None)
 
             # 2. 根据加载对象的类型，进行智能适配
             
@@ -164,7 +130,7 @@ class HamGNNCommunicator(BaseCommunicator):
         except Exception as e:
             logging.error(f"预处理输入数据时发生错误: {e}")
             raise ValueError(f"无法处理输入数据: {e}")
-    
+        
     
 
     def pack_response(self, hamiltonian_output: dict):
@@ -176,8 +142,9 @@ class HamGNNCommunicator(BaseCommunicator):
         """
         output_path = hamiltonian_output.get('output_path', None)
         hamiltonian_tensor = hamiltonian_output['hamiltonian']
+        return_directly = hamiltonian_output.get('return_directly', False)
         # 步骤4: 现在可以安全地对这个张量进行后续处理了
-        if output_path is not None:
+        if not return_directly:
             # 如果提供了输出路径，则将结果保存到指定位置
             output_file = Path(output_path) / "prediction_hamiltonian.npy"
             output_file.parent.mkdir(parents=True, exist_ok=True)

@@ -1,5 +1,4 @@
 # core/tasks.py
-
 import os
 import yaml
 import json
@@ -16,15 +15,11 @@ import concurrent
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import psutil
 
-
 # --- 初始化与配置 ---
-
 # 初始化日志,建议在Celery worker启动时也配置好日志级别
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
 TASK_CONFIG_PATH = get_package_path('task_basic_config.yaml')
-
 config = yaml.safe_load(open(TASK_CONFIG_PATH, 'r', encoding='utf-8'))
 logger.info(f"加载任务配置: {TASK_CONFIG_PATH}")
 
@@ -50,7 +45,6 @@ celery_app = Celery('tasks',
 # celery_app.conf.task_acks_late = True  # 任务完成后才确认
 # celery_app.conf.worker_max_tasks_per_child = 10  # 处理10个任务后重启worker进程
 
-
 @celery_app.task
 def worker_healthcheck():
     """检查worker健康状态并记录"""
@@ -64,6 +58,7 @@ QUEUE_HAMGNN_WAITING = 'hamgnn_waiting_tasks' # 队列C: hamgnn等待队列
 QUEUE_POST_WAITING = 'postprocess_waiting_tasks' # 队列D: 后处理等待队列
 QUEUE_COMPLETED = 'completed_tasks'           # 队列E: 完成队列
 TIMEOUT=180
+
 # --- 辅助函数 ---
 def submit_request(process_url, job_ticket):
     """将请求提交到线程池的辅助函数"""
@@ -76,7 +71,7 @@ def submit_request(process_url, job_ticket):
         response.raise_for_status()
         return response.json()  # 返回响应的JSON内容
     except Exception as e:
-        logger.error(f"后处理请求失败: {e}")
+        logger.error(f"请求失败: {e}")
         raise
 
 def _move_task(task_id, from_queue, to_queue, task_data=None):
@@ -198,8 +193,6 @@ def wait_for_slurm_job(job_id: str, first_time=config.get("slurm_monitor", {}).g
     redis_client.hdel('slurm_job_status_cache', job_id)
     return False
 
-
-
 @celery_app.task
 def poll_slurm_jobs():
     """
@@ -233,7 +226,6 @@ def poll_slurm_jobs():
                 continue
         
         pipe.execute()
-
         # 检查哪些作业已经终结并从相关监控列表中移除
         TERMINAL_STATES = ["COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "NODE_FAIL"]
         finished_jobs = set()
@@ -241,25 +233,37 @@ def poll_slurm_jobs():
             state = redis_client.hget('slurm_job_status_cache', job_id)
             if state and any(term in state for term in TERMINAL_STATES):
                 finished_jobs.add(job_id)
-
         if finished_jobs:
             redis_client.srem('monitored_slurm_jobs', *finished_jobs)
-            redis_client.srem('running_preprocess_jobs', *finished_jobs)
-            logger.info(f"作业 {finished_jobs} 已完成,从所有相关监控列表移除。")
-
+            # 注意：这里我们不再从running_preprocess_jobs中移除，
+            # 因为我们需要在poll_slurm_and_dispatch中区分不同类型的作业
+            logger.info(f"作业 {finished_jobs} 已完成,从监控列表移除。")
         return f"已更新 {updated_jobs} 个作业的状态。"
     except subprocess.CalledProcessError as e:
         # 如果sacct命令因为某些原因(比如所有作业都不在近期历史记录中)而返回非零退出码
         logger.warning(f"sacct命令可能执行失败(这在作业完成后是正常的): {e.stderr}")
         # 在这种情况下,我们可以认为所有被查询的作业都已经终结
         redis_client.srem('monitored_slurm_jobs', *monitored_jobs)
-        redis_client.srem('running_preprocess_jobs', *monitored_jobs)
         return "sacct查询无有效返回,已清理所有监控中的作业。"
     except Exception as e:
         logger.error(f"批量查询Slurm作业时发生未知错误: {e}")
         return f"批量查询失败: {e}"
 
 # --- 核心工作流任务 ---
+
+# 在celery_app初始化后添加
+def initialize_redis_keys():
+    """确保所有计数器和集合都是正确的类型"""
+    # 清理并重新初始化后处理计数器
+    redis_client.delete('running_postprocess_jobs')
+    # 清理并重新初始化OpenMX计数器
+    if redis_client.type('running_preprocess_jobs') != 'set':
+        redis_client.delete('running_preprocess_jobs')
+    # 清理并重新初始化HamGNN计数器
+    if redis_client.type('running_hamgnn_jobs') != 'string':
+        redis_client.delete('running_hamgnn_jobs')
+        redis_client.set('running_hamgnn_jobs', '0')
+
 
 @celery_app.task(
     bind=True,
@@ -336,7 +340,6 @@ def start_workflow(self, structure_file_path: str, workflow_params: dict = {}):
         raise
 
 # --- 四个独立的定时任务函数 ---
-
 @celery_app.task
 def dispatch_openmx_tasks():
     """
@@ -458,17 +461,30 @@ def dispatch_openmx_tasks():
 @celery_app.task
 def poll_slurm_and_dispatch():
     """
-    F2定时任务: 轮询Slurm状态,将openmx等待队列中已完成的任务转移到hamgnn等待队列
+    F2定时任务: 轮询Slurm状态,检查所有等待队列中的Slurm作业状态,并移动已完成的任务到下一队列
+    现在处理两种类型的作业:
+    1. OpenMX作业 (openmx_job_id): 完成后从openmx等待队列移动到hamgnn等待队列
+    2. Postprocess作业 (postprocess_job_id): 完成后从后处理等待队列移动到完成队列
     """
-    # 先执行轮询Slurm作业的任务
+    # 先执行轮询Slurm作业的任务,更新所有作业状态
     poll_result = poll_slurm_jobs()
     logger.info(f"轮询Slurm作业状态结果: {poll_result}")
     
+    # 处理openmx等待队列中的任务
+    openmx_tasks_processed = process_openmx_waiting_tasks()
+    
+    # 处理postprocess等待队列中的任务
+    postprocess_tasks_processed = process_postprocess_waiting_tasks()
+    
+    return f"已处理 {openmx_tasks_processed} 个OpenMX任务和 {postprocess_tasks_processed} 个后处理任务"
+
+def process_openmx_waiting_tasks():
+    """处理openmx等待队列中的任务"""
     # 获取openmx等待队列中的所有任务
     openmx_tasks = redis_client.hgetall(QUEUE_OPENMX_WAITING)
     
     if not openmx_tasks:
-        return "没有等待中的OpenMX任务"
+        return 0
     
     tasks_processed = 0
     
@@ -520,9 +536,96 @@ def poll_slurm_and_dispatch():
             # 将失败的任务直接移到完成队列
             _move_task(task_id, QUEUE_OPENMX_WAITING, QUEUE_COMPLETED, task_data)
             
-    return f"处理了 {tasks_processed} 个已完成的OpenMX任务"
+    return tasks_processed
 
-
+def process_postprocess_waiting_tasks():
+    """处理后处理等待队列中的任务"""
+    # 获取后处理等待队列中的所有任务
+    postprocess_tasks = redis_client.hgetall(QUEUE_POST_WAITING)
+    
+    if not postprocess_tasks:
+        return 0
+    
+    tasks_processed = 0
+    
+    for task_id, task_data_json in postprocess_tasks.items():
+        task_data = json.loads(task_data_json)
+        postprocess_job_id = task_data.get('postprocess_job_id')
+        
+        # 跳过没有postprocess_job_id的任务(可能是尚未提交的任务)
+        if not postprocess_job_id:
+            continue
+            
+        # 检查Slurm作业状态
+        state = redis_client.hget('slurm_job_status_cache', postprocess_job_id)
+        
+        if state and "COMPLETED" in state:
+            # 作业已完成,更新任务状态
+            task_data['status'] = 'postprocess_completed'
+            task_data['status_log'].append({
+                'timestamp': time.time(),
+                'status': 'postprocess_completed',
+                'message': '后处理已完成'
+            })
+            
+            # 从监控列表中移除作业ID
+            redis_client.srem('monitored_slurm_jobs', postprocess_job_id)
+            redis_client.srem('running_postprocess_jobs', postprocess_job_id)
+            
+            # 写入成功标记文件
+            try:
+                final_result = {
+                    'stage_code': 'COMPLETED', 
+                    'stage_name': '全部完成', 
+                    'details': '工作流所有阶段已成功执行完毕。', 
+                    'result_dir': str(task_data.get('workdir'))
+                }
+                with open(os.path.join(task_data.get('workdir'), 'SUCCESS.json'), 'w', encoding='utf-8') as f:
+                    json.dump(final_result, f, ensure_ascii=False, indent=4)
+            except Exception as file_error:
+                logger.error(f"写入成功信息到 {task_data.get('workdir')} 时出错: {file_error}")
+            
+            # 标记任务为已完成(用于幂等性检查)
+            redis_client.set(f"completed:{task_id}", "1", ex=7*24*60*60)  # 7天过期
+            
+            # 将任务从后处理等待队列移动到完成队列
+            if _move_task(task_id, QUEUE_POST_WAITING, QUEUE_COMPLETED, task_data):
+                logger.info(f"任务 {task_id} 的后处理已完成,已移至完成队列")
+                tasks_processed += 1
+            else:
+                logger.error(f"移动任务 {task_id} 到完成队列失败")
+                
+        elif state and any(fail_state in state for fail_state in ["FAILED", "CANCELLED", "TIMEOUT", "NODE_FAIL"]):
+            # 作业失败,更新任务状态
+            task_data['status'] = 'postprocess_failed'
+            task_data['error'] = f"后处理作业失败,状态: {state}"
+            task_data['status_log'].append({
+                'timestamp': time.time(),
+                'status': 'postprocess_failed',
+                'message': f'后处理作业失败,状态: {state}'
+            })
+            
+            # 从监控列表中移除作业ID
+            redis_client.srem('monitored_slurm_jobs', postprocess_job_id)
+            redis_client.srem('running_postprocess_jobs', postprocess_job_id)
+            
+            # 写入失败标记文件
+            try:
+                failure_info = {
+                    'stage_code': 'FAILED',
+                    'stage_name': '4/4: 后处理', 
+                    'details': task_data['error'],
+                    'workdir': str(task_data.get('workdir'))
+                }
+                with open(os.path.join(task_data.get('workdir'), 'FAILURE.json'), 'w', encoding='utf-8') as f:
+                    json.dump(failure_info, f, ensure_ascii=False, indent=4)
+            except Exception as file_error:
+                logger.error(f"写入失败信息到 {task_data.get('workdir')} 时出错: {file_error}")
+            
+            # 将失败的任务直接移到完成队列
+            _move_task(task_id, QUEUE_POST_WAITING, QUEUE_COMPLETED, task_data)
+            
+    return tasks_processed
 
 @celery_app.task
 def dispatch_hamgnn_tasks():
@@ -749,56 +852,18 @@ def handle_hamgnn_task_failure(task_id, task_data, workdir, error_message, statu
     # 将失败的任务直接移到完成队列
     _move_task(task_id, QUEUE_HAMGNN_WAITING, QUEUE_COMPLETED, task_data)
 
-# 添加一个周期性的清理任务，清理过期的锁和修正可能不准确的计数器
-@celery_app.task
-def cleanup_hamgnn_stale_locks_and_counters():
-    """定期清理过期的HamGNN锁和不准确的计数器"""
-    # 获取所有处理锁
-    hamgnn_locks = []
-    for key in redis_client.scan_iter(match="hamgnn_processing_lock:*"):
-        hamgnn_locks.append(key)
-    
-    # 获取当前队列中的任务数
-    queue_tasks = set(redis_client.hkeys(QUEUE_HAMGNN_WAITING))
-    
-    # 清理不再需要的锁
-    for lock in hamgnn_locks:
-        task_id = lock.split(":")[-1]
-        if task_id not in queue_tasks:
-            redis_client.delete(lock)
-            logger.info(f"清理了过期的HamGNN任务锁: {lock}")
-    
-    # 修正运行计数器
-    current_running_key = 'running_hamgnn_jobs'
-    current_running = int(redis_client.get(current_running_key) or 0)
-    
-    # 如果计数器值不合理(大于最大并发数的2倍)，则重置它
-    max_concurrent = config.get('concurrency', {}).get('max_hamgnn_jobs', 5)
-    if current_running > max_concurrent * 2:
-        redis_client.set(current_running_key, 0)
-        logger.warning(f"重置了异常的HamGNN计数器: {current_running} -> 0")
-    
-    return "HamGNN清理完成"
-
-
 @celery_app.task
 def dispatch_postprocess_tasks():
     """
-    F4定时任务: 将后处理等待队列的任务提交给postprocessServer,完成后转移到完成队列
-    此版本允许多个进程并行处理不同的任务，每个进程只处理未被锁定的任务
+    F4定时任务: 将后处理等待队列的任务提交给postprocessServer,得到job_id后留在队列中等待作业完成
+    与OpenMX处理方式相似，只负责提交任务，完成状态的检查由poll_slurm_and_dispatch处理
     """
     try:
         # 从配置中获取最大并发数
         max_concurrent = config.get('concurrency', {}).get('max_postprocess_jobs', 10)
         
-        # 创建一个Redis键来跟踪当前运行的后处理作业数
-        current_running_key = 'running_postprocess_jobs'
-        
-        # 使用Redis的原子操作初始化计数器(如果不存在)
-        redis_client.setnx(current_running_key, 0)
-        
-        # 获取当前运行的后处理作业数
-        current_running = int(redis_client.get(current_running_key) or 0)
+        # 检查当前运行的后处理作业数
+        current_running = redis_client.scard('running_postprocess_jobs')
         
         # 计算可提交的任务数量
         slots_available = max(0, max_concurrent - current_running)
@@ -818,6 +883,9 @@ def dispatch_postprocess_tasks():
         for task_id, task_data_json in postprocess_tasks.items():
             try:
                 task_data = json.loads(task_data_json)
+                # 跳过已经提交给后处理服务器的任务
+                if 'postprocess_job_id' in task_data:
+                    continue
                 sorted_tasks.append((task_id, task_data, task_data.get('created_at', 0)))
             except json.JSONDecodeError:
                 logger.error(f"任务 {task_id} 的数据格式无效，跳过")
@@ -825,47 +893,26 @@ def dispatch_postprocess_tasks():
         
         sorted_tasks.sort(key=lambda x: x[2])  # 按创建时间排序
         
-        # 存储成功处理的任务数量
+        # 处理可提交的任务
         tasks_processed = 0
-        tasks_locked = 0
-        tasks_already_processed = 0
-        
-        # 创建线程池 - 只使用当前可用的槽位数量的线程
-        with ThreadPoolExecutor(max_workers=min(slots_available, len(sorted_tasks))) as executor:
-            futures = {}  # 使用字典存储future -> task_info的映射
-            task_locks = []  # 存储已获取的任务锁，便于后续释放
-            
-            # 尝试锁定并提交任务 - 遍历所有任务，但只提交未被锁定的任务
-            for task_id, task_data, _ in sorted_tasks:
-                # 如果已经提交的任务达到可用槽位，则不再继续尝试
-                if len(futures) >= slots_available:
-                    break
-                    
+        for task_id, task_data, _ in sorted_tasks:
+            if tasks_processed >= slots_available:
+                break
+                
+            try:
                 # 为每个任务创建一个锁，确保同一任务不会被并发处理
                 task_lock_key = f"processing_lock:{task_id}"
-                
-                # 检查任务是否已完成(幂等性检查)
-                completed_key = f"completed:{task_id}"
-                if redis_client.exists(completed_key):
-                    logger.info(f"任务 {task_id} 已处理完成，跳过")
-                    tasks_already_processed += 1
-                    continue
                 
                 # 尝试获取锁，如果已被锁定则跳过
                 if not redis_client.set(task_lock_key, "1", nx=True, ex=600):  # 10分钟锁
                     logger.info(f"任务 {task_id} 正在被其他进程处理，跳过")
-                    tasks_locked += 1
                     continue
-                
-                # 记录已获取的锁
-                task_locks.append(task_lock_key)
                 
                 try:
                     # 再次检查任务是否在队列中(可能在获取锁的过程中被其他进程移除)
                     if not redis_client.hexists(QUEUE_POST_WAITING, task_id):
                         logger.info(f"任务 {task_id} 不在后处理队列中，可能已被处理")
                         redis_client.delete(task_lock_key)  # 释放锁
-                        task_locks.remove(task_lock_key)
                         continue
                     
                     # 提取任务参数
@@ -884,16 +931,12 @@ def dispatch_postprocess_tasks():
                     
                     # 更新任务状态
                     task_data['status'] = 'submitting_to_postprocess'
-                    task_data['status_log'] = task_data.get('status_log', [])
                     task_data['status_log'].append({
                         'timestamp': time.time(),
                         'status': 'submitting_to_postprocess',
                         'message': '正在提交给后处理服务',
                         'worker_id': os.getpid()  # 记录处理该任务的worker ID
                     })
-                    
-                    # 更新Redis中的任务数据
-                    redis_client.hset(QUEUE_POST_WAITING, task_id, json.dumps(task_data))
                     
                     # 创建请求参数(添加请求ID确保幂等性)
                     request_id = f"{task_id}_{int(time.time())}"
@@ -907,176 +950,114 @@ def dispatch_postprocess_tasks():
                     
                     # 提交给后处理服务器
                     logger.info(f"提交任务 {task_id} 到后处理服务器: {postprocess_url}")
+                    response = requests.post(postprocess_url, json=job_ticket, timeout=TIMEOUT)
+                    response.raise_for_status()
                     
-                    # 增加运行计数(使用原子操作)
-                    redis_client.incr(current_running_key)
+                    # 解析响应
+                    response_data = response.json()
+                    postprocess_job_id = response_data['job_id']  # 假设后处理服务器返回job_id
                     
-                    # 将请求提交到线程池
-                    future = executor.submit(submit_request, postprocess_url, job_ticket)
-                    futures[future] = (task_id, task_data, workdir, task_lock_key)
+                    # 更新任务数据
+                    task_data['postprocess_job_id'] = postprocess_job_id
+                    task_data['status'] = 'submitted_to_postprocess'
+                    task_data['status_log'].append({
+                        'timestamp': time.time(),
+                        'status': 'submitted_to_postprocess',
+                        'message': f'已提交给后处理服务器,作业ID: {postprocess_job_id}'
+                    })
                     
-                except Exception as e:
+                    # 将Slurm作业ID添加到监控列表
+                    redis_client.sadd('running_postprocess_jobs', postprocess_job_id)
+                    redis_client.sadd('monitored_slurm_jobs', postprocess_job_id)
+                    
+                    # 更新队列中的任务数据(注意不移动队列)
+                    redis_client.hset(QUEUE_POST_WAITING, task_id, json.dumps(task_data))
+                    
+                    logger.info(f"任务 {task_id} 已提交给后处理服务器,Slurm作业ID: {postprocess_job_id}")
+                    tasks_processed += 1
+                    
+                finally:
                     # 释放锁
                     redis_client.delete(task_lock_key)
-                    if task_lock_key in task_locks:
-                        task_locks.remove(task_lock_key)
                     
-                    # 减少运行计数
-                    redis_client.decr(current_running_key)
-                    
-                    logger.error(f"准备提交任务 {task_id} 到后处理服务器时出错: {e}")
-                    handle_task_failure(task_id, task_data, workdir, str(e), "准备提交到后处理服务器时出错")
-            
-            # 处理完成的任务，按照完成顺序处理(而非提交顺序)
-            # 设置超时，防止线程池阻塞
-            timeout = max(600, min(30 * len(futures), 3600))  # 最少10分钟，最多1小时
-            
-            try:
-                for future in as_completed(futures, timeout=timeout):
-                    task_id, task_data, workdir, task_lock_key = futures[future]
-                    
-                    try:
-                        # 获取请求结果
-                        result = future.result()
-                        
-                        # 更新任务数据
-                        task_data['status'] = 'completed'
-                        task_data['result'] = result
-                        task_data['status_log'].append({
-                            'timestamp': time.time(),
-                            'status': 'completed',
-                            'message': '工作流所有阶段已成功完成'
-                        })
-                        
-                        # 将最终结果写入文件
-                        final_result = {
-                            'stage_code': 'COMPLETED', 
-                            'stage_name': '全部完成', 
-                            'details': '工作流所有阶段已成功执行完毕。', 
-                            'result_dir': str(workdir)
-                        }
-                        
-                        # 写入成功标记文件
-                        try:
-                            with open(os.path.join(workdir, 'SUCCESS.json'), 'w', encoding='utf-8') as f:
-                                json.dump(final_result, f, ensure_ascii=False, indent=4)
-                        except Exception as file_error:
-                            logger.error(f"写入成功信息到 {workdir} 时出错: {file_error}")
-                        
-                        # 将任务从后处理等待队列移动到完成队列
-                        if _move_task(task_id, QUEUE_POST_WAITING, QUEUE_COMPLETED, task_data):
-                            logger.info(f"任务 {task_id} 已全部完成,已移至完成队列")
-                            tasks_processed += 1
-                            
-                            # 标记任务为已完成(用于幂等性检查)
-                            # 设置较长的过期时间，比如7天
-                            redis_client.set(f"completed:{task_id}", "1", ex=7*24*60*60)
-                        else:
-                            logger.error(f"移动任务 {task_id} 到完成队列失败")
-                            
-                    except Exception as e:
-                        # 处理请求失败
-                        logger.error(f"后处理请求执行失败: {e}")
-                        handle_task_failure(task_id, task_data, workdir, str(e), "后处理请求执行失败")
-                    
-                    finally:
-                        # 无论成功还是失败，都要减少运行计数和释放锁
-                        redis_client.decr(current_running_key)
-                        redis_client.delete(task_lock_key)
-                        if task_lock_key in task_locks:
-                            task_locks.remove(task_lock_key)
-            except concurrent.futures.TimeoutError:
-                # 处理整体超时情况
-                logger.error(f"线程池执行超时，可能有任务未完成")
-                # 取消所有未完成的任务
-                for future in [f for f in futures if not f.done()]:
-                    future.cancel()
-                    task_id, task_data, workdir, task_lock_key = futures[future]
-                    logger.error(f"任务 {task_id} 在超时时间内未完成，已取消")
-                    handle_task_failure(task_id, task_data, workdir, "处理超时", "任务在超时时间内未完成，已取消")
-                    # 减少计数器和释放锁
-                    redis_client.decr(current_running_key)
-                    redis_client.delete(task_lock_key)
+            except Exception as e:
+                logger.error(f"提交任务 {task_id} 到后处理服务器时出错: {e}")
+                # 更新任务状态为失败
+                task_data['status'] = 'postprocess_failed'
+                task_data['error'] = str(e)
+                task_data['status_log'].append({
+                    'timestamp': time.time(),
+                    'status': 'postprocess_failed',
+                    'message': f'提交到后处理服务器失败: {str(e)}'
+                })
+                # 写入失败标记文件
+                try:
+                    failure_info = {
+                        'stage_code': 'FAILED',
+                        'stage_name': '4/4: 后处理', 
+                        'details': str(e),
+                        'workdir': str(workdir)
+                    }
+                    with open(os.path.join(workdir, 'FAILURE.json'), 'w', encoding='utf-8') as f:
+                        json.dump(failure_info, f, ensure_ascii=False, indent=4)
+                except Exception as file_error:
+                    logger.error(f"写入失败信息到 {workdir} 时出错: {file_error}")
+                
+                # 将失败的任务直接移到完成队列
+                _move_task(task_id, QUEUE_POST_WAITING, QUEUE_COMPLETED, task_data)
+        
+        return f"处理了 {tasks_processed} 个后处理任务"
     
     except Exception as e:
         logger.error(f"后处理调度任务执行时发生未知错误: {e}")
         return f"执行错误: {str(e)}"
-    
-    return f"处理了 {tasks_processed} 个后处理任务，{tasks_locked} 个任务正在被其他进程处理，{tasks_already_processed} 个任务已处理过"
 
-
-def handle_task_failure(task_id, task_data, workdir, error_message, status_message):
-    """处理任务失败的辅助函数，集中处理失败逻辑"""
-    # 更新任务状态为失败
-    task_data['status'] = 'postprocess_failed'
-    task_data['error'] = error_message
-    task_data['status_log'] = task_data.get('status_log', [])
-    task_data['status_log'].append({
-        'timestamp': time.time(),
-        'status': 'postprocess_failed',
-        'message': f'后处理失败: {status_message}'
-    })
-    
-    # 写入失败标记文件
-    failure_info = {
-        'stage_code': 'FAILED',
-        'stage_name': '4/4: 后处理', 
-        'details': error_message,
-        'workdir': str(workdir)
-    }
-    
-    try:
-        with open(os.path.join(workdir, 'FAILURE.json'), 'w', encoding='utf-8') as f:
-            json.dump(failure_info, f, ensure_ascii=False, indent=4)
-    except Exception as file_error:
-        logger.error(f"写入失败信息到 {workdir} 时出错: {file_error}")
-    
-    # 将失败的任务直接移到完成队列
-    _move_task(task_id, QUEUE_POST_WAITING, QUEUE_COMPLETED, task_data)
-
-# 添加一个周期性的清理任务，清理过期的锁和修正可能不准确的计数器
+# --- 清理任务 ---
 @celery_app.task
 def cleanup_stale_locks_and_counters():
     """定期清理过期的锁和不准确的计数器"""
     # 获取所有处理锁
     processing_locks = []
-    for key in redis_client.scan_iter(match="processing_lock:*"):
+    for key in redis_client.scan_iter(match="*_lock:*"):
         processing_locks.append(key)
     
-    # 获取当前队列中的任务数
-    queue_tasks = set(redis_client.hkeys(QUEUE_POST_WAITING))
+    # 获取当前队列中的任务
+    all_tasks = set()
+    all_tasks.update(redis_client.hkeys(QUEUE_PENDING))
+    all_tasks.update(redis_client.hkeys(QUEUE_OPENMX_WAITING))
+    all_tasks.update(redis_client.hkeys(QUEUE_HAMGNN_WAITING))
+    all_tasks.update(redis_client.hkeys(QUEUE_POST_WAITING))
     
     # 清理不再需要的锁
     for lock in processing_locks:
         task_id = lock.split(":")[-1]
-        if task_id not in queue_tasks:
+        if task_id not in all_tasks:
             redis_client.delete(lock)
             logger.info(f"清理了过期的任务锁: {lock}")
     
     # 修正运行计数器
-    current_running_key = 'running_postprocess_jobs'
-    current_running = int(redis_client.get(current_running_key) or 0)
-    
-    # 如果计数器值不合理(大于最大并发数的2倍)，则重置它
-    max_concurrent = config.get('concurrency', {}).get('max_postprocess_jobs', 10)
-    if current_running > max_concurrent * 2:
-        redis_client.set(current_running_key, 0)
-        logger.warning(f"重置了异常的后处理计数器: {current_running} -> 0")
+    for counter_key, max_val in [
+        ('running_preprocess_jobs', config.get('concurrency', {}).get('max_openmx_jobs', 10)),
+        ('running_hamgnn_jobs', config.get('concurrency', {}).get('max_hamgnn_jobs', 5)),
+        ('running_postprocess_jobs', config.get('concurrency', {}).get('max_postprocess_jobs', 10))
+    ]:
+        current_running = int(redis_client.get(counter_key) or 0)
+        
+        # 如果计数器值不合理(大于最大并发数的2倍)，则重置它
+        if current_running > max_val * 2:
+            redis_client.set(counter_key, 0)
+            logger.warning(f"重置了异常的计数器 {counter_key}: {current_running} -> 0")
     
     return "清理完成"
-# --- 定时任务注册 ---
-
 
 @celery_app.task
 def recover_stuck_tasks():
-    """
-    恢复处理中卡住的任务，检查所有带锁但长时间未更新的任务
-    """
+    """恢复处理中卡住的任务，检查所有带锁但长时间未更新的任务"""
     # 查找所有锁定的任务
-    for task_type in ["hamgnn", "postprocess"]:
-        queue_name = QUEUE_HAMGNN_WAITING if task_type == "hamgnn" else QUEUE_POST_WAITING
-        lock_prefix = f"{task_type}_processing_lock:" if task_type == "hamgnn" else "processing_lock:"
-        
+    for task_type, lock_prefix, queue_name in [
+        ("hamgnn", "hamgnn_processing_lock:", QUEUE_HAMGNN_WAITING),
+        ("postprocess", "processing_lock:", QUEUE_POST_WAITING)
+    ]:
         # 获取队列中的所有任务
         tasks = redis_client.hgetall(queue_name)
         
@@ -1093,7 +1074,6 @@ def recover_stuck_tasks():
                     for log in task_data.get('status_log', []):
                         if log.get('timestamp', 0) > last_update:
                             last_update = log.get('timestamp', 0)
-
                     # 如果超过5分钟未更新，认为任务卡住了
                     if (time.time() - last_update) > 300:  # 5分钟
                         logger.warning(f"发现卡住的{task_type}任务: {task_id}，已超过5分钟未更新")
@@ -1111,6 +1091,9 @@ def recover_stuck_tasks():
 
 
 
+# 调用初始化函数
+initialize_redis_keys()
+# --- 定时任务注册 ---
 @celery_app.on_after_configure.connect
 def setup_periodic_tasks(sender, **kwargs):
     """
@@ -1120,6 +1103,9 @@ def setup_periodic_tasks(sender, **kwargs):
     # 从配置文件加载执行间隔
     periodic_tasks_config = config.get('periodic_tasks', {})
     
+    # 健康检查
+    sender.add_periodic_task(30.0, worker_healthcheck.s(), name='worker healthcheck every 30s')
+    
     # F1: 调度OpenMX任务
     dispatch_openmx_interval = periodic_tasks_config.get('dispatch_openmx_interval', 5.0)
     logger.info(f"设置OpenMX调度定时任务,执行间隔: {dispatch_openmx_interval} 秒。")
@@ -1128,7 +1114,6 @@ def setup_periodic_tasks(sender, **kwargs):
         dispatch_openmx_tasks.s(), 
         name=f'dispatch OpenMX tasks every {dispatch_openmx_interval}s'
     )
-    sender.add_periodic_task(30.0, worker_healthcheck.s())
     
     # F2: 轮询Slurm状态并调度
     poll_slurm_interval = periodic_tasks_config.get('poll_slurm_interval', 5.0)
@@ -1156,18 +1141,17 @@ def setup_periodic_tasks(sender, **kwargs):
         dispatch_postprocess_tasks.s(), 
         name=f'dispatch postprocess tasks every {dispatch_postprocess_interval}s'
     )
-    # sender.add_periodic_task(
-    #     300.0,  # 5分钟
-    #     cleanup_hamgnn_stale_locks_and_counters.s(),
-    #     name='cleanup hamgnn locks every 5min'
-    # )
-    # sender.add_periodic_task(
-    #     300.0,  # 5分钟
-    #     cleanup_stale_locks_and_counters.s(),
-    #     name='cleanup postprocess locks every 5min'
-    # )
-    # sender.add_periodic_task(
-    #     300.0,  # 5分钟
-    #     recover_stuck_tasks.s(),
-    #     name='recover stuck tasks every 5min'
-    # )
+    
+    # 定期清理任务
+    sender.add_periodic_task(
+        300.0,  # 5分钟
+        cleanup_stale_locks_and_counters.s(),
+        name='cleanup stale resources every 5min'
+    )
+    
+    # 恢复卡住任务
+    sender.add_periodic_task(
+        300.0,  # 5分钟
+        recover_stuck_tasks.s(),
+        name='recover stuck tasks every 5min'
+    )
