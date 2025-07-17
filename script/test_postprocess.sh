@@ -1,12 +1,12 @@
-#!/bin/bash
+#!/bin/sh
 #SBATCH --partition chu       
 #SBATCH --nodes=1
 #SBATCH --ntasks=1               # 
-#SBATCH --cpus-per-task=96      # 8-4090 <= 12 per gpu   4v100  <=4  per gpu
-#SBATCH --mem=128G               # 8-4090 <= 100G per gpu 4v100  <=50G per gpu   
-#SBATCH --output=./log/PostProcessServerOutput.log  
-#SBATCH --error=./log/PostProcessServerINFO.log  
-#SBATCH --job-name=Server_PostProcess
+#SBATCH --cpus-per-task=64      # 8-4090 <= 12 per gpu   4v100  <=4  per gpu
+#SBATCH --mem=64G               # 8-4090 <= 100G per gpu 4v100  <=50G per gpu 
+#SBATCH --output=./log/test_postprocessOitput.log  
+#SBATCH --error=./log/test_postprocessInfo.log  
+#SBATCH --job-name=test_postprocess
 
 ulimit -s unlimited
 module purge
@@ -35,5 +35,4 @@ Job Start Time:   $(date +"%Y-%m-%d %H:%M:%S")
 EOF
 python --version
 
-# gunicorn --workers 16 --bind 0.0.0.0:41151 core.openmx-flow.postprocessServer:app --timeout 3000
-python -m core.openmx-flow.postprocessServer
+python /ssd/work/ycxie/hamgnn/testopenmx/HamGNN-Flow/test/postprocess_test.py

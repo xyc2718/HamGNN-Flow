@@ -131,8 +131,6 @@ class HamGNNCommunicator(BaseCommunicator):
             logging.error(f"预处理输入数据时发生错误: {e}")
             raise ValueError(f"无法处理输入数据: {e}")
         
-    
-
     def pack_response(self, hamiltonian_output: dict):
         """
         将计算结果打包成一个Flask的json响应对象。
@@ -229,11 +227,11 @@ class PostProcessCommunicator(BaseCommunicator):
         try: 
             json_data = request.get_json()
             if not json_data or 'hamiltonian_path' not in json_data:
-                return jsonify({"error": "请求中必须包含 'hamiltonian_path' 键。"}), 400
+                raise ValueError("请求中必须包含 'hamiltonian_path' 键。")
             hamiltonian_path = json_data['hamiltonian_path']
             graph_data_path = json_data['graph_data_path']
             if not json_data or 'graph_data_path' not in json_data:
-                return jsonify({"error": "请求中必须包含 'graph_data_path' 键。"}), 400
+                raise ValueError("请求中必须包含 'graph_data_path' 键。")
             if type(hamiltonian_path) is not str:
                 try:
                     hamiltonian_path = str(hamiltonian_path)

@@ -35,4 +35,4 @@ Job Start Time:   $(date +"%Y-%m-%d %H:%M:%S")
 EOF
 python --version
 celery -A core.tasks.celery_app worker purge
-celery -A core.tasks.celery_app worker -B --concurrency=16 --loglevel=INFO
+celery -A core.tasks.celery_app worker -B --concurrency=48 --loglevel=INFO

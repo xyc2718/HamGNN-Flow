@@ -4,20 +4,24 @@
 workflow:
   base_work_dir: "/home/user/hamgnn/workdir"  # 工作目录基础路径
   log_level: "INFO"                           # 日志级别
-  cleanup_after_days: 7                       # 自动清理多少天前的工作目录
+  cleanup: true                              # 是否清理工作目录
 
 # 定时任务运行间隔配置（单位：秒）
 periodic_tasks:
   dispatch_openmx_interval: 2.0              # F1任务：提交openmx作业的检查间隔
-  poll_slurm_interval: 5.0                   # F2任务：轮询Slurm作业状态的间隔
+  poll_slurm_interval: 4.0                  # F2任务：轮询Slurm作业状态的间隔
   dispatch_hamgnn_interval: 4.0               # F3任务：AI模型推理任务的检查间隔
-  dispatch_postprocess_interval: 5.0         # F4任务：提交后处理作业的检查间隔
+  dispatch_postprocess_interval: 2.0         # F4任务：提交后处理作业的检查间隔
+  update_partition_interval: 0.2
+  cleanup_completed_tasks_interval: 60.0  # 清理已完成任务的scfout,npz,npy文件的间隔
 
 # 各处理阶段的并发限制
 concurrency:
-  max_openmx_jobs: 64                         # 同时运行的openmx作业最大数量
-  max_hamgnn_jobs: 12                          # 同时运行的AI推理任务最大数量
-  max_postprocess_jobs: 64                    # 同时运行的后处理作业最大数量
+  max_openmx_jobs: 128                         # 同时运行的openmx作业最大数量
+  max_hamgnn_jobs: 48                          # 同时运行的AI推理任务最大数量
+  max_hamgnn_batch_size: 12                    #单次提交AI推理任务的批量大小
+  max_postprocess_jobs: 128                    # 同时运行的后处理作业最大数量
+
 
 # 故障恢复配置
 recovery:
@@ -30,3 +34,7 @@ monitoring:
   collect_metrics: true                       # 是否收集系统指标
   metrics_interval: 60                        # 指标收集间隔（秒）
   queue_length_warning: 50                    # 队列长度警告阈值
+
+default_parameters:
+  partition: "auto"
+  default_partition : "chu"  # 默认Slurm分区

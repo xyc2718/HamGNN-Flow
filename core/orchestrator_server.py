@@ -13,8 +13,10 @@ from .tasks import celery_app, start_workflow, redis_client
 from .tasks import QUEUE_PENDING, QUEUE_OPENMX_WAITING, QUEUE_HAMGNN_WAITING, QUEUE_POST_WAITING, QUEUE_COMPLETED
 import traceback
 from .utils import get_package_path, find_free_port, write_server_info
-
+import yaml
 LOGGING_LEVEL = logging.INFO
+default_para_path= get_package_path("task_basic_config.yaml")
+default_params=(yaml.safe_load(open(default_para_path, 'r', encoding='utf-8'))).get('default_parameters', {})
 
 class OrchestratorAPI:
     """
@@ -51,7 +53,8 @@ class OrchestratorAPI:
             
             data = request.get_json()
             structure_path = data.get('structure')
-            workflow_params = data.get('config', {}) # 获取可选的、本次运行的自定义参数
+            workflow_params = default_params.copy()
+            workflow_params.update(data.get('config', {})) # 获取可选的、本次运行的自定义参数
 
             if not structure_path:
                 return jsonify({"error": "请求中必须包含 'structure'"}), 400

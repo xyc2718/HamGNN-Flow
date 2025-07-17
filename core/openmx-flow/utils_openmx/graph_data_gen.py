@@ -389,7 +389,8 @@ def graph_data_gen(input):
     if len(graphs) == 0:
         print('No valid data found! Please check the input paths or if the DFT calculations are converged.')
     else:
-        np.savez_compressed(graph_data_path, graph=graphs)
+        # np.savez_compressed(graph_data_path, graph=graphs)
+        np.savez(graph_data_path, graph=graphs)
         print('The graph data is saved in %s' % graph_data_path)
 if __name__ == "__main__":
     argparser = argparse.ArgumentParser(description="Generate graph data for HamGNN.")

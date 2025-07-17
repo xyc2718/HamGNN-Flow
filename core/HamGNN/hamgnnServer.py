@@ -32,7 +32,7 @@ import logging
 import numpy as np
 from flask import request, jsonify, Response as FlaskResponse
 import pytorch_lightning as pl
-from ..utils import write_server_info
+from ..utils import write_server_info,delete_server_info
 from ..utils import find_free_port, get_package_path
 import threading
 from functools import wraps
@@ -260,36 +260,29 @@ class HamGNNServer:
                 traceback.print_exc() 
                 return jsonify({"error": "服务器内部错误，请查看服务器日志了解详情。", "error_type": str(type(e).__name__)}), 500
             
-        
+        @self.app.route("/shutdown")
+        def shutdown():
+            """
+            处理服务器关闭请求。
+            """
+            info_file_path = get_package_path("server_info/hamgnn_server_info.json")
+            self.app.logger.info("收到服务器关闭请求，正在进行关闭...")
+            delete_server_info(os.getpid(), info_file_path)
 
-    def run(self,num_threads=4):
+    def run(self, num_threads=4):
         """
         启动服务器，包括HPC的服务发现功能。
         这个方法对应于服务器的“运行”阶段。
         """
-        info_file_path =get_package_path("server_info/hamgnn_server_info.json")
+        info_file_path = get_package_path("server_info/hamgnn_server_info.json")
         host = socket.getfqdn()
         port = find_free_port()
         self.app.logger.info(f"正在启动 Flask 服务器，地址: http://{host}:{port}")
-        write_server_info(host, port,self.type,info_file_path)
-        # 使用生产级的Waitress服务器来运行应用
-        serve(self.app, host="0.0.0.0", port=port,threads=num_threads)
+        self.app.logger.info(f"正在注册服务器信息到: {info_file_path}")
+        write_server_info(host=host, port=port, type=self.type, info_file=info_file_path, mode="a")
+        serve(self.app, host="0.0.0.0", port=port, threads=num_threads)
 
-    # # --- 用于HPC环境的辅助方法 ---
-    # @staticmethod
-    # def _find_free_port():
-    #     """静态方法：动态查找一个未被占用的端口。"""
-    #     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-    #         s.bind(('', 0)); return s.getsockname()[1]
-
-    # @staticmethod #TODO:线程安全地自动添加或更新服务器信息文件，以支持多个服务器实例。
-    # def _write_server_info(host, port, info_file):
-    #     """静态方法：将服务器地址信息写入到共享文件。"""
-    #     server_info = {"host": host, "port": port, "pid": os.getpid(),"type": "HamGNNServer","id": f"{host}:{port}"}
-    #     info_file.parent.mkdir(parents=True, exist_ok=True)
-    #     with open(info_file, 'w') as f: json.dump(server_info, f)
-    #     self.app.logger.info(f"服务器信息已写入: {info_file}")
-
+   
 
 if __name__ == '__main__':
     # 现在，主执行块变得极其简单和清晰。

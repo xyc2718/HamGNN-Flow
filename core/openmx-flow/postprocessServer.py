@@ -55,18 +55,19 @@ class PostProcessServer:
         self.config_path= POSTPROCESS_CONFIG_PATH
         self.default_params = config.get("default_input_parameters", {})
         self.app.logger.info(f"get default_params: {self.default_params}")
-        self.process_config = self.default_params.copy()
-        self.conda_source = self.process_config.get("conda_source")
-        self.conda_env = self.process_config.get("conda_env")
+        self.conda_source = config.get("conda_source")
+        self.conda_env = config.get("conda_env")
         if not self.conda_source or not self.conda_env:
             raise ValueError("Conda环境配置不完整，请检查配置文件。")
-    def set_workdir(self, workdir=None):
-        self.workdir = str(workdir) if workdir else str(get_package_path(""))
-        self.process_config["save_dir"] = str(self.workdir)
+    # def set_workdir(self, workdir=None):
+    #     self.workdir = str(workdir) if workdir else str(get_package_path(""))
+    #     self.process_config["save_dir"] = str(self.workdir)
     def set_process_config(self, process_config={}):
         """设置后处理配置。"""
-        self.process_config.update(process_config)
-        self.app.logger.debug(f"设置后处理配置为: {self.process_config}")
+        final_config = self.default_params.copy()
+        final_config.update(process_config)
+        self.app.logger.debug(f"设置后处理配置为: {final_config}")
+        return final_config
 
     def track_load(self, f):
         @wraps(f)
@@ -93,21 +94,21 @@ class PostProcessServer:
         job_id = result.stdout.strip().split()[-1]
         self.app.logger.info(f"作业提交成功，Job ID: {job_id}")
         return job_id
-    def run_band_cal_submit(self):
-        config_path=os.path.join(self.workdir,"band_cal.yaml")
+    def run_band_cal_submit(self,process_config, workdir):
+        config_path=os.path.join(workdir,"band_cal.yaml")
         with open(config_path, 'w') as f:
-            yaml.dump(self.process_config, f, default_flow_style=False, allow_unicode=True, 
+            yaml.dump(process_config, f, default_flow_style=False, allow_unicode=True, 
               encoding='utf-8')
 
         sbatch_script = f"""#!/bin/sh
 #SBATCH --job-name=band_cal               # Job name
-#SBATCH --partition={self.process_config.get("partition", "chu")}                     # Partition (queue) name [xiang;yang;xu;chu]; adjust as needed
+#SBATCH --partition={process_config.get("partition", "chu")}                     # Partition (queue) name [xiang;yang;xu;chu]; adjust as needed
 #SBATCH --nodes=1                         # Number of nodes
 #SBATCH --ntasks=1                         # Total MPI tasks ntasks*cpu-per-task <= [64-xiang;64-yang;96-xu;96-chu]
-#SBATCH --cpus-per-task={self.process_config.get("ncpus", 4)}                 # CPUs per task (OpenMP threads)
+#SBATCH --cpus-per-task={process_config.get("ncpus", 4)}                 # CPUs per task (OpenMP threads)
 #SBATCH --time=48:00:00                   # Wall‐time limit (HH:MM:SS)
-#SBATCH --output={os.path.join(self.workdir,"band_cal.%j.out")}              # STDOUT file
-#SBATCH --error={os.path.join(self.workdir,"band_cal.%j.err")}               # STDERR file
+#SBATCH --output={os.path.join(workdir,"band_cal.%j.out")}              # STDOUT file
+#SBATCH --error={os.path.join(workdir,"band_cal.%j.err")}               # STDERR file
 set -euo pipefail
 module purge
 source {self.conda_source}
@@ -117,9 +118,9 @@ conda run -n {self.conda_env} python {get_package_path("openmx-flow/utils_openmx
         --input {config_path}
         """
 
-        with open(os.path.join(self.workdir, "run_band_cal.sh"), 'w') as f:
+        with open(os.path.join(workdir, "run_band_cal.sh"), 'w') as f:
             f.write(sbatch_script)
-        job_id = self._submit_job(os.path.join(self.workdir, "run_band_cal.sh"))
+        job_id = self._submit_job(os.path.join(workdir, "run_band_cal.sh"))
         self.app.logger.info(f"OpenMX计算作业已提交，Job ID: {job_id}")
         return job_id
 
@@ -162,20 +163,21 @@ conda run -n {self.conda_env} python {get_package_path("openmx-flow/utils_openmx
                         os.makedirs(workdir)
                     except FileExistsError:
                         logging.warning(f"工作目录已存在: {workdir}")
-                self.set_workdir(workdir)
-                self.app.logger.debug(f"接收到的输入: {input}")
-                self.app.logger.debug(f"使用参数: {self.process_config}")
-                self.app.logger.debug(f"工作目录: {self.workdir}")
-                self.process_config["hamiltonian_path"] = hamiltonian_path
-                self.process_config["graph_data_path"] = graph_data_path
-                self.set_process_config(band_para)
-                band_cal(self.process_config, device=self.device)
-                self.app.logger.debug(f"process_config: {self.process_config}")
-                self.app.logger.info(f"能带计算完成，结果保存在: {self.workdir}")
+
+                process_config= self.set_process_config(band_para)
+                self.app.logger.debug(f"接收到的输入: {hamiltonian_path}")
+                self.app.logger.debug(f"使用参数: {process_config}")
+                self.app.logger.debug(f"工作目录: {workdir}")
+                process_config["hamiltonian_path"] = hamiltonian_path
+                process_config["graph_data_path"] = graph_data_path
+                process_config["save_dir"] = workdir
+                band_cal(process_config)
+                self.app.logger.debug(f"process_config: {process_config}")
+                self.app.logger.info(f"能带计算完成，结果保存在: {workdir}")
                 end_time = time.time()
                 elapsed_time = end_time - start_time
                 self.app.logger.info(f"能带计算耗时: {elapsed_time:.2f}秒")
-                return self.communicator.pack_response({"status": "success",  "workdir": str(self.workdir), "process_config": self.process_config})
+                return self.communicator.pack_response({"status": "success",  "workdir": str(workdir), "process_config": process_config})
             except Exception as e:
                 warnings.warn(f"能带计算发生错误: {e}")
                 traceback.print_exc() 
@@ -203,16 +205,17 @@ conda run -n {self.conda_env} python {get_package_path("openmx-flow/utils_openmx
                         os.makedirs(workdir)
                     except FileExistsError:
                         logging.warning(f"工作目录已存在: {workdir}")
-                self.set_workdir(workdir)
-                self.app.logger.debug(f"接收到的输入: {input}")
-                self.app.logger.debug(f"使用参数: {self.process_config}")
-                self.app.logger.debug(f"工作目录: {self.workdir}")
-                self.process_config["hamiltonian_path"] = hamiltonian_path
-                self.process_config["graph_data_path"] = graph_data_path
-                self.set_process_config(band_para)
-                job_id=self.run_band_cal_submit()
+
+                process_config= self.set_process_config(band_para)
+                self.app.logger.debug(f"接收到的输入: {hamiltonian_path}")
+                self.app.logger.debug(f"使用参数: {process_config}")
+                self.app.logger.debug(f"工作目录: {workdir}")
+                process_config["hamiltonian_path"] = hamiltonian_path
+                process_config["graph_data_path"] = graph_data_path
+                process_config["save_dir"] = workdir
+                job_id=self.run_band_cal_submit(process_config, workdir)
                 self.app.logger.info(f"能带计算任务已提交，任务ID: {job_id}")
-                return self.communicator.pack_response({"status": "success", "job_id": job_id, "workdir": str(self.workdir), "process_config": self.process_config})
+                return self.communicator.pack_response({"status": "success", "job_id": job_id, "workdir": str(workdir), "process_config": process_config})
             except Exception as e:
                 warnings.warn(f"能带计算发生错误: {e}")
                 traceback.print_exc() 
@@ -273,7 +276,7 @@ conda run -n {self.conda_env} python {get_package_path("openmx-flow/utils_openmx
 
 if __name__ == "__main__":
     argument_parser = argparse.ArgumentParser(description='OpenMX Server')
-    argument_parser.add_argument('--config', default=PostProcessServer, type=str, help='OpenMX配置文件路径')
+    argument_parser.add_argument('--config', default=POSTPROCESS_CONFIG_PATH, type=str, help='OpenMX配置文件路径')
     args = argument_parser.parse_args()
     openmx_server = PostProcessServer(config_path=args.config)
     num_threads = openmx_server.config.get('num_threads', 4)  # 从配置中获取线程数

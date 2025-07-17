@@ -87,25 +87,26 @@ class OpenMXServer:
 
         self.default_params = config.get("default_input_parameters", {})
         self.app.logger.info(f"get default_params: {self.default_params}")
-        self.process_config = self.default_params.copy()
     def set_workdir(self, workdir=None):
-        self.workdir = Path(workdir) if workdir else Path(get_package_path(""))
+        workdir = Path(workdir) if workdir else Path(get_package_path(""))
+        return workdir
         
     def set_process_config(self, process_config={}):
         """设置后处理配置。"""
-        self.process_config.update(process_config)
-        self.app.logger.debug(f"设置后处理配置为: {self.process_config}")
+        final_config = self.default_params.copy()
+        final_config.update(process_config)
+        self.app.logger.debug(f"设置后处理配置为: {final_config}")
+        return final_config
     def set_structure(self, structure,output_path=None):
         """设置结构体，当前目录默认为工作目录。"""
-        self.structure = structure
         if output_path is not None and output_path != "./":
             try:
                 os.mkdir(output_path)
             except FileExistsError:
                 logging.warning(f"工作目录已存在: {output_path}")
-            self.set_workdir(output_path)
+            workdir=self.set_workdir(output_path)
         elif output_path == "./":
-            self.set_workdir(os.path.dirname(self.structure))
+            workdir=self.set_workdir(os.path.dirname(structure))
         else:
             # current_path = os.path.dirname(os.path.abspath(__file__))
             current_path = get_package_path("")
@@ -115,29 +116,25 @@ class OpenMXServer:
                 os.makedirs(workdir_name)
             except FileExistsError:
                 logging.warning(f"工作目录已存在: {workdir_name}")
-            self.set_workdir(workdir_name)
-        self.app.logger.info(f"设置结构体为: {self.structure}，工作目录为: {self.workdir}")
-    def transform_structure(self, structure=None):
+            workdir=self.set_workdir(workdir_name)
+        self.app.logger.info(f"设置结构体为: {structure}，工作目录为: {workdir}")
+        return structure,workdir
+    def transform_structure(self, structure, workdir, process_config):
         """转换结构体为OpenMX输入文件。"""
-        if structure is None:
-            structure = self.structure
-        if not structure:
-            raise ValueError("请先设置结构体。")
-        output_file = self.workdir / f"{Path(structure).stem}.dat"
+        output_file = workdir / f"{Path(structure).stem}.dat"
         poscar_to_openmxfile(structure,
-                        system_name=self.process_config.get("system_name", "SystemName"),
+                        system_name=process_config.get("system_name", "SystemName"),
                         filename=output_file,
-                        DosKgrid=self.process_config.get("DosKgrid", (4, 4, 4)),
-                        ScfKgrid=self.process_config.get("ScfKgrid", (4, 4, 4)),
-                        SpinPolarization=self.process_config.get("SpinPolarization", 'off'),
-                        XcType=self.process_config.get("XcType", 'GGA-PBE'),
-                        ElectronicTemperature=self.process_config.get("ElectronicTemperature", 100),
-                        energycutoff=self.process_config.get("energycutoff", 150),
-                        maxIter=self.process_config.get("maxIter", 1),
-                        ScfCriterion=self.process_config.get("ScfCriterion", 1.0e-6)
+                        DosKgrid=process_config.get("DosKgrid", (4, 4, 4)),
+                        ScfKgrid=process_config.get("ScfKgrid", (4, 4, 4)),
+                        SpinPolarization=process_config.get("SpinPolarization", 'off'),
+                        XcType=process_config.get("XcType", 'GGA-PBE'),
+                        ElectronicTemperature=process_config.get("ElectronicTemperature", 100),
+                        energycutoff=process_config.get("energycutoff", 150),
+                        maxIter=process_config.get("maxIter", 1),
+                        ScfCriterion=process_config.get("ScfCriterion", 1.0e-6)
                     )
         self.app.logger.debug(f"转换完成，OpenMX输入文件已保存到: {output_file}")
-        self.openmx_input_file = output_file
         return output_file
 
     def _submit_job(self, script_path: str) -> str:
@@ -148,19 +145,17 @@ class OpenMXServer:
         self.app.logger.info(f"作业提交成功，Job ID: {job_id}")
         return job_id
 
-    def run_openmx_submit(self):
+    def run_openmx_submit(self,workdir,process_config,openmx_input_file):
         """运行OpenMX计算。"""
-        if not hasattr(self, 'openmx_input_file'):
-            raise ValueError("请先转换结构体为OpenMX输入文件。")
         sbatch_script = f"""#!/bin/sh
 #SBATCH --job-name=openmx_postprocess               # Job name
-#SBATCH --partition={self.process_config.get("openmx_partition", "chu")}                     # Partition (queue) name [xiang;yang;xu;chu]; adjust as needed
+#SBATCH --partition={process_config.get("partition", "chu")}                     # Partition (queue) name [xiang;yang;xu;chu]; adjust as needed
 #SBATCH --nodes=1                         # Number of nodes
 #SBATCH --ntasks=1                         # Total MPI tasks ntasks*cpu-per-task <= [64-xiang;64-yang;96-xu;96-chu]
-#SBATCH --cpus-per-task={self.process_config.get("openmx_ncpus", 4)}                 # CPUs per task (OpenMP threads)
+#SBATCH --cpus-per-task={process_config.get("ncpus", 4)}                 # CPUs per task (OpenMP threads)
 #SBATCH --time=48:00:00                   # Wall‐time limit (HH:MM:SS)
-#SBATCH --output={os.path.join(self.workdir,"openmx.%j.out")}              # STDOUT file (%j = JobID)
-#SBATCH --error={os.path.join(self.workdir,"openmx.%j.err")}               # STDERR file
+#SBATCH --output={os.path.join(workdir,"openmx.%j.out")}              # STDOUT file (%j = JobID)
+#SBATCH --error={os.path.join(workdir,"openmx.%j.err")}               # STDERR file
 set -euo pipefail
 module purge
 source {self.conda_source}
@@ -186,36 +181,34 @@ Job Start Time:   $(date +"%Y-%m-%d %H:%M:%S")
 EOF
 
 # Launch OpenMX (standard build)
-cd {self.workdir}
-mpirun -np {self.process_config.get("openmx_ncpus", 4)} {self.openmx_postprocess} {self.openmx_input_file} > {self.process_config.get("system_name","SystemName")}.std
+cd {workdir}
+mpirun -np {process_config.get("ncpus", 4)} {self.openmx_postprocess} {openmx_input_file} > {process_config.get("system_name","SystemName")}.std
 
 conda run -n hamgnn python {get_package_path("openmx-flow/utils_openmx/graph_data_gen.py")} \\
-        --graph_data_save_path {self.workdir / "graph_data.npz"} \\
-        --dat_file_name {self.openmx_input_file} \\
-        --scf_path {self.workdir} \\
-        --nao_max {self.process_config.get("nao_max")} \\
-        --soc_switch {self.process_config.get("soc_switch")} \\
-        --dat_file_name {str(self.openmx_input_file)}
+        --graph_data_save_path {workdir / "graph_data.npz"} \\
+        --dat_file_name {openmx_input_file} \\
+        --scf_path {workdir} \\
+        --nao_max {process_config.get("nao_max")} \\
+        --soc_switch {process_config.get("soc_switch")} \\
+        --dat_file_name {str(openmx_input_file)}
         """
-        with open(self.workdir / "run_openmx.sh", 'w') as f:
+        with open(workdir / "run_openmx.sh", 'w') as f:
             f.write(sbatch_script)
-        job_id = self._submit_job(self.workdir / "run_openmx.sh")
+        job_id = self._submit_job(workdir / "run_openmx.sh")
         self.app.logger.info(f"OpenMX计算作业已提交，Job ID: {job_id}")
         return job_id
-    
-    def run_openmx_scf(self,gen_graph=True):
+
+    def run_openmx_scf(self, workdir, process_config, openmx_input_file, gen_graph=True):
         """运行OpenMX计算。"""
-        if not hasattr(self, 'openmx_input_file'):
-            raise ValueError("请先转换结构体为OpenMX输入文件。")
         sbatch_script = f"""#!/bin/sh
 #SBATCH --job-name=openmx_scf                # Job name
-#SBATCH --partition={self.process_config.get("openmx_partition", "chu")}                     # Partition (queue) name [xiang;yang;xu;chu]; adjust as needed
+#SBATCH --partition={process_config.get("partition", "chu")}                     # Partition (queue) name [xiang;yang;xu;chu]; adjust as needed
 #SBATCH --nodes=1                         # Number of nodes
 #SBATCH --ntasks=1                         # Total MPI tasks ntasks*cpu-per-task <= [64-xiang;64-yang;96-xu;96-chu]
-#SBATCH --cpus-per-task={self.process_config.get("openmx_ncpus", 16)}                 # CPUs per task (OpenMP threads)
+#SBATCH --cpus-per-task={process_config.get("ncpus", 16)}                 # CPUs per task (OpenMP threads)
 #SBATCH --time=48:00:00                   # Wall‐time limit (HH:MM:SS)
-#SBATCH --output={os.path.join(self.workdir,"openmx.%j.out")}              # STDOUT file (%j = JobID)
-#SBATCH --error={os.path.join(self.workdir,"openmx.%j.err")}               # STDERR file
+#SBATCH --output={os.path.join(workdir,"openmx.%j.out")}              # STDOUT file (%j = JobID)
+#SBATCH --error={os.path.join(workdir,"openmx.%j.err")}               # STDERR file
 set -euo pipefail
 module purge
 source {self.conda_source}
@@ -241,45 +234,27 @@ Job Start Time:   $(date +"%Y-%m-%d %H:%M:%S")
 EOF
 
 # Launch OpenMX (standard build)
-cd {self.workdir}
-mpirun -np {self.process_config.get("openmx_ncpus", 16)} {self.openmx} {self.openmx_input_file}  > {self.process_config.get("system_name","SystemName")}.std
-mpirun -np {self.process_config.get("openmx_ncpus", 16)} {self.openmx_postprocess} {self.openmx_input_file}
+cd {workdir}
+mpirun -np {process_config.get("ncpus", 16)} {self.openmx} {openmx_input_file}  > {process_config.get("system_name","SystemName")}.std
+mpirun -np {process_config.get("ncpus", 16)} {self.openmx_postprocess} {openmx_input_file}
         """
         if gen_graph:
             sbatch_script += f"""\n
 conda run -n hamgnn python {get_package_path("openmx-flow/utils_openmx/graph_data_gen.py")} \\
-        --graph_data_save_path {self.workdir / "graph_data.npz"} \\
-        --dat_file_name {self.openmx_input_file}    \\
-        --scf_path {self.workdir} \\
-        --nao_max {self.process_config.get("nao_max")} \\
-        --soc_switch {self.process_config.get("soc_switch")} \\
-        --system_name {self.process_config.get("system_name","SystemName")} \\
+        --graph_data_save_path {workdir / "graph_data.npz"} \\
+        --dat_file_name {openmx_input_file}    \\
+        --scf_path {workdir} \\
+        --nao_max {process_config.get("nao_max")} \\
+        --soc_switch {process_config.get("soc_switch")} \\
+        --system_name {process_config.get("system_name","SystemName")} \\
         --ifscf True
         """
-        with open(self.workdir / "run_openmx.sh", 'w') as f:
+        with open(workdir / "run_openmx.sh", 'w') as f:
             f.write(sbatch_script)
-        job_id = self._submit_job(self.workdir / "run_openmx.sh")
+        job_id = self._submit_job(workdir / "run_openmx.sh")
         self.app.logger.info(f"OpenMX计算作业已提交，Job ID: {job_id}")
         return job_id
     
-    def run_openmx(self):
-        """运行OpenMX计算。"""
-        #FIXME:由于无法指定openmx_postprocess和read_openmx的保存目录位置，该方法暂时无法使用
-        if not hasattr(self, 'openmx_input_file'):
-            raise ValueError("请先转换结构体为OpenMX输入文件。")
-        os.chdir(self.workdir) #FIXME: openmx_postprocess和read_openmx似乎都不支持设置保存目录位置，这对于flaskserver是不被允许的。
-        os.system(f"mpirun -np {self.process_config.get('openmx_ncpus', 16)} {self.openmx_postprocess} {self.openmx_input_file}")
-        input= {"graph_data_save_path": str(self.workdir / "graph_data.npz"),
-        "dat_file_name": str(self.openmx_input_file),
-        "scf_path": str(self.workdir),
-        "nao_max": 26,
-        "soc_switch": False
-    }
-        self.app.logger.info(f"开始生成图数据，参数: {input}")
-        # 调用图数据生成函数
-        graph_data_gen(
-            input)
-        self.app.logger.info(f"图数据生成完成，保存路径: {self.workdir / 'graph_data.npz'}")
 
     def _register_routes(self):
         """注册Flask路由，并将它们连接到类实例。"""
@@ -292,64 +267,67 @@ conda run -n hamgnn python {get_package_path("openmx-flow/utils_openmx/graph_dat
         @self.app.route("/pre_process", methods=['POST'])
         def pre_process():
             try:
-               structure, graph_para, output_path = self.communicator.unpack_request(request)
-               self.set_structure(structure, output_path=output_path)
+               structure_path, graph_para, output_path = self.communicator.unpack_request(request)
+               structure,workdir=self.set_structure(structure_path, output_path=output_path)
                self.app.logger.debug(f"接收到的结构体: {structure}")
                self.app.logger.debug(f"接收到的图参数: {graph_para}")
-               self.set_process_config(graph_para)
-               self.app.logger.debug(f"使用图参数: {self.process_config}")
-               self.transform_structure()
-               job_id=self.run_openmx_submit()
-               return self.communicator.pack_response({"job_id": job_id, "workdir": str(self.workdir),
-                                                       "process_config": self.process_config,"job_type": "post_process"})
+               process_config=self.set_process_config(graph_para)
+               self.app.logger.debug(f"使用图参数: {process_config}")
+               openmx_input_file=self.transform_structure(structure, workdir, process_config)
+               job_id=self.run_openmx_submit(workdir,process_config,openmx_input_file)
+               return self.communicator.pack_response({"job_id": job_id, "workdir": str(workdir),
+                                                       "process_config": process_config,"job_type": "post_process"})
             except Exception as e:
                 warnings.warn(f"预测过程中发生错误: {e}")
                 traceback.print_exc() 
-                return jsonify({"error": "服务器内部错误，请查看服务器日志了解详情。", "error_type": str(type(e).__name__)}), 500
+                return jsonify({"error": "服务器内部错误，请查看服务器日志了解详情。", "error_type": str(type(e).__name__),"workdir": str(workdir)}), 500
 
-        @self.app.route("/graph", methods=['POST'])
-        def gen_graph():
-            try:
-               structure, graph_para, output_path = self.communicator.unpack_request(request)
-               self.set_structure(structure, output_path=output_path)
-               self.app.logger.debug(f"接收到的结构体: {structure}")
-               self.app.logger.debug(f"接收到的图参数: {graph_para}")
-               self.set_process_config(graph_para)
-               self.app.logger.debug(f"使用图参数: {self.process_config}")
-               graph_data_gen(
-                   input={
-                       "graph_data_save_path": self.workdir / "graph_data.npz",
-                       "dat_file_name": self.openmx_input_file,
-                       "scf_path": self.workdir,
-                       "nao_max": self.process_config.get("nao_max", 26),
-                       "soc_switch": self.process_config.get("soc_switch", False)
-                   }
-               )
-               self.app.logger.info(f"图数据生成完成，保存路径: {self.workdir / 'graph_data.npz'}")
-               return self.communicator.pack_response({"job_id":None, "workdir": str(self.workdir),
-                                                       "process_config": self.process_config,"job_type": "graph"})
-            except Exception as e:
-                warnings.warn(f"openmx处理过程中发生错误: {e}")
-                traceback.print_exc() 
-                return jsonify({"error": "服务器内部错误，请查看服务器日志了解详情。", "error_type": str(type(e).__name__)}), 500
+        # @self.app.route("/graph", methods=['POST'])
+        # def gen_graph():
+        #     try:
+        #        structure_path, graph_para, output_path = self.communicator.unpack_request(request)
+        #        structure, workdir = self.set_structure(structure_path, output_path=output_path)
+        #        self.app.logger.debug(f"接收到的结构体: {structure}")
+        #        self.app.logger.debug(f"接收到的图参数: {graph_para}")
+        #        process_config=self.set_process_config(graph_para)
+        #        self.app.logger.debug(f"使用图参数: {process_config}")
+        #        openmx_input_file =request.json.get("openmx_input_file", None)
+        #        if openmx_input_file is None:
+        #            raise ValueError("请求中必须包含 'openmx_input_file' 字段，指向OpenMX输入文件的路径。")
+        #        graph_data_gen(
+        #            input={
+        #                "graph_data_save_path": workdir / "graph_data.npz",
+        #                "dat_file_name": openmx_input_file,
+        #                "scf_path": workdir,
+        #                "nao_max": process_config.get("nao_max", 26),
+        #                "soc_switch": process_config.get("soc_switch", False)
+        #            }
+        #        )
+        #        self.app.logger.info(f"图数据生成完成，保存路径: {workdir / 'graph_data.npz'}")
+        #        return self.communicator.pack_response({"job_id":None, "workdir": str(workdir),
+        #                                                "process_config": process_config,"job_type": "graph"})
+        #     except Exception as e:
+        #         warnings.warn(f"openmx处理过程中发生错误: {e}")
+        #         traceback.print_exc() 
+        #         return jsonify({"error": "服务器内部错误，请查看服务器日志了解详情。", "error_type": str(type(e).__name__)}), 500
             
         @self.app.route("/scf", methods=['POST'])
         def scf():
             try:
-                structure, graph_para, output_path = self.communicator.unpack_request(request)
-                self.set_structure(structure, output_path=output_path)
+                structure_path, graph_para, output_path = self.communicator.unpack_request(request)
+                structure,workdir=self.set_structure(structure_path, output_path=output_path)
                 self.app.logger.debug(f"接收到的结构体: {structure}")
                 self.app.logger.debug(f"接收到的图参数: {graph_para}")
-                self.set_process_config(graph_para)
-                self.transform_structure()
-                job_id=self.run_openmx_scf(gen_graph=self.process_config.get("gen_graph", True))
+                process_config=self.set_process_config(graph_para)
+                openmx_input_file=self.transform_structure(structure, workdir, process_config)
+                job_id=self.run_openmx_scf(workdir,process_config,openmx_input_file=openmx_input_file,gen_graph=process_config.get("gen_graph", True))
 
-                return self.communicator.pack_response({"job_id": job_id, "workdir": str(self.workdir),
-                                                        "process_config": self.process_config,"job_type": "scf"})
+                return self.communicator.pack_response({"job_id": job_id, "workdir": str(workdir),
+                                                        "process_config": process_config,"job_type": "scf"})
             except Exception as e:
                 warnings.warn(f"预测过程中发生错误: {e}")
                 traceback.print_exc() 
-                return jsonify({"error": "服务器内部错误，请查看服务器日志了解详情。", "error_type": str(type(e).__name__)}), 500
+                return jsonify({"error": "服务器内部错误，请查看服务器日志了解详情。", "error_type": str(type(e).__name__),"workdir": str(workdir)}), 500
         @self.app.route("/api", methods=['GET'])
         def api():
             return jsonify({

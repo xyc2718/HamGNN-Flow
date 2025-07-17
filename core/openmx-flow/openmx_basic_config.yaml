@@ -16,8 +16,8 @@ default_input_parameters:
     energycutoff: 150
     maxIter: 1
     ScfCriterion: 1.0e-6
-    openmx_partition: "chu"
-    openmx_ncpus: 4
+    partition: "chu"
+    ncpus: 4
     nao_max: 26
     soc_switch: false
 
