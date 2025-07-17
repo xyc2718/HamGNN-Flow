@@ -514,12 +514,13 @@ def start_workflow(self, structure_file_path: str, workflow_params: dict = {}):
         dict: 包含任务ID和状态URL的信息
     """
     try:
-        ncpus = workflow_params.get('ncpus', 4)
-        if workflow_params.get('partition') == 'auto':
-            logger.info("检测到 'partition' 参数为 'auto'，开始自动选择分区...")
-            best_partition = _get_best_partition(ncpus=ncpus)
-            workflow_params['partition'] = best_partition
-            logger.info(f"已自动选择分区: {best_partition}")
+        #分区调度逻辑修改为在每个任务内
+        # ncpus = workflow_params.get('ncpus', 4)
+        # if workflow_params.get('partition') == 'auto':
+        #     logger.info("检测到 'partition' 参数为 'auto'，开始自动选择分区...")
+        #     best_partition = _get_best_partition(ncpus=ncpus)
+        #     workflow_params['partition'] = best_partition
+        #     logger.info(f"已自动选择分区: {best_partition}")
 
         
         # 创建任务唯一标识符
@@ -648,6 +649,14 @@ def dispatch_openmx_tasks():
             structure_file_path = task_data.get('structure_file_path')
             workflow_params = task_data.get('workflow_params', {})
             # logger.info(f"work_para:{workflow_params}")
+            ncpus = workflow_params.get('ncpus', 4)
+            workflow_params_openmx = workflow_params.copy()
+            if workflow_params.get('partition') == 'auto':
+                logger.info("检测到 'partition' 参数为 'auto'，开始自动选择分区...")
+                best_partition = _get_best_partition(ncpus=ncpus)
+                workflow_params['partition'] = best_partition
+                logger.info(f"已自动选择分区: {best_partition}")
+                # logger.info(f"work_para:{workflow_params}")
             workdir = task_data.get('workdir')
             
             # 更新任务状态
@@ -674,7 +683,7 @@ def dispatch_openmx_tasks():
                 preprocess_url, 
                 json={
                     "structure": str(structure_file_path), 
-                    "graph_para": workflow_params,
+                    "graph_para": workflow_params_openmx,
                     "output_path": output_path,
                     "timeout": 120
                 }
@@ -1205,6 +1214,14 @@ def dispatch_postprocess_tasks():
                 workdir = task_data.get('workdir')
                 workflow_params = task_data.get('workflow_params', {})
                 output_path = workdir
+
+                ncpus = workflow_params.get('ncpus', 4)
+                workflow_params_postprocess = workflow_params.copy()
+                if workflow_params.get('partition') == 'auto':
+                    logger.info("检测到 'partition' 参数为 'auto'，开始自动选择分区...")
+                    best_partition = _get_best_partition(ncpus=ncpus)
+                    workflow_params_postprocess['partition'] = best_partition
+                    logger.info(f"已自动选择分区: {best_partition}")
                 
                 # 检查必要参数
                 if not hamiltonian_path:
@@ -1229,7 +1246,7 @@ def dispatch_postprocess_tasks():
                     "request_id": request_id,
                     "hamiltonian_path": str(hamiltonian_path),
                     "graph_data_path": str(graph_data_path),
-                    "band_para": workflow_params,
+                    "band_para": workflow_params_postprocess,
                     "output_path": output_path
                 }
                 
