@@ -195,13 +195,15 @@ def _write_failure_file(workdir, stage_name, details):
 
 
 
-def _get_best_partition():
+def _get_best_partition(ncpus:int=4):
     """
-    【最终修正】从Redis缓存中获取最空闲的Slurm分区。
-    修正了在整数中查找字符导致的TypeError。
+    【最终修正】从Redis缓存中获取最空闲的Slurm分区，并原子性地扣除所需CPU数量。
     
+    Args:
+        ncpus (int): 本次任务需要消耗的CPU核心数。
+        
     Returns:
-        str: 最空闲的分区名。如果没有找到合适的分区，则返回默认分区。
+        str: 成功预留资源的分区名。如果没有找到合适的分区，则返回默认分区。
     """
     partitions_key = 'slurm_partition_status'
     default_partition = config.get("slurm_monitor", {}).get("default_partition", "chu") 
@@ -214,36 +216,78 @@ def _get_best_partition():
             logger.warning(f"Redis中没有Slurm分区信息，将使用默认分区: {default_partition}")
             return default_partition
 
-        best_partition = None
-        max_idle_cpus = -1
-
+        # 1. 筛选出所有满足CPU数要求的候选分区
+        candidate_partitions = []
         for name, data_json in all_partitions.items():
             try:
                 data = json.loads(data_json)
-                
-                # 检查分区是否可用
-                if data.get('state') in AVAILABLE_STATES:
-                    # 将total_cpus转为字符串后再进行查找，避免TypeError
+                if data.get('state') in AVAILABLE_STATES and data.get('idle_cpus', 0) >= ncpus:
+                    # 排除带'*'的特殊分区
                     if '*' in name or '*' in str(data.get('total_cpus', '')):
                         continue
-
-                    idle_cpus = data.get('idle_cpus', 0)
-                    if idle_cpus > max_idle_cpus:
-                        max_idle_cpus = idle_cpus
-                        best_partition = name
+                    candidate_partitions.append({'name': name, 'idle_cpus': data.get('idle_cpus', 0)})
             except (json.JSONDecodeError, ValueError):
-                logger.warning(f"解析分区 {name} 的数据失败: {data_json}")
                 continue
         
-        if best_partition:
-            logger.info(f"找到最空闲的分区: {best_partition} (空闲CPU: {max_idle_cpus})")
-            return best_partition
-        else:
-            logger.warning(f"没有找到任何可用状态（如 idle, mixed, up）的分区，将使用默认分区: {default_partition}")
+        if not candidate_partitions:
+            logger.warning(f"没有找到任何至少有 {ncpus} 个空闲CPU的可用分区，将使用默认分区。")
             return default_partition
-    
+            
+        # 2. 按空闲CPU数降序排序，优先选择最空闲的
+        candidate_partitions.sort(key=lambda p: p['idle_cpus'], reverse=True)
+
+        # 3. 循环尝试，直到成功为一个分区预留资源
+        for candidate in candidate_partitions:
+            partition_name = candidate['name']
+            
+            # 使用 WATCH 监视整个哈希键
+            with redis_client.pipeline() as pipe:
+                try:
+                    pipe.watch(partitions_key)
+                    
+                    # 在事务开始前，再次获取最新的数据
+                    latest_data_json = pipe.hget(partitions_key, partition_name)
+                    if not latest_data_json:
+                        # 分区信息在此期间消失了，跳过
+                        pipe.unwatch()
+                        continue
+                    
+                    latest_data = json.loads(latest_data_json)
+                    
+                    # 再次确认CPU数量是否足够
+                    if latest_data.get('idle_cpus', 0) < ncpus:
+                        pipe.unwatch()
+                        continue
+                        
+                    # 开始事务
+                    pipe.multi()
+                    
+                    # 计算并设置新的空闲CPU数
+                    latest_data['idle_cpus'] -= ncpus
+                    updated_data_json = json.dumps(latest_data)
+                    pipe.hset(partitions_key, partition_name, updated_data_json)
+                    
+                    # 执行事务
+                    results = pipe.execute()
+                    
+                    # 如果事务成功（没有被WATCH中断），则说明资源预留成功
+                    if results:
+                        logger.info(f"成功为任务在分区 {partition_name} 预留 {ncpus} 个CPU，"
+                                    f"该分区剩余空闲CPU: {latest_data['idle_cpus']}")
+                        return partition_name
+
+                except redis.WatchError:
+                    # 如果发生WatchError，说明在WATCH到EXEC之间数据被改变了
+                    # 记录日志并继续循环，尝试下一个候选分区
+                    logger.debug(f"尝试为分区 {partition_name} 预留资源时发生竞争，将尝试下一个分区。")
+                    continue
+        
+        # 4. 如果所有候选分区都尝试失败（高并发），则返回默认分区
+        logger.warning(f"所有候选分区在高并发下均预留失败，将使用默认分区: {default_partition}")
+        return default_partition
+
     except Exception as e:
-        logger.error(f"获取最佳分区时出错: {e}，将使用默认分区: {default_partition}")
+        logger.error(f"获取最佳分区时发生严重错误: {e}，将使用默认分区: {default_partition}")
         return default_partition
 
 
@@ -293,6 +337,7 @@ def update_slurm_partition_status():
     并使用正确的列来计算总CPU和空闲CPU。
     """
     logger.info("开始查询并聚合Slurm分区状态...")
+    excluded_partitions = set(config.get("monitoring", {}).get("excluded_partitions", []))
     try:
         # 简化命令，我们只需要 分区名(P), 节点状态(T), 和CPU详情(C)
         command = ["sinfo", "-h", "-o", "%P|%T|%C"]
@@ -312,6 +357,9 @@ def update_slurm_partition_status():
 
             try:
                 partition_name, state, cpus_state_str = parts
+
+                if partition_name in excluded_partitions:
+                    continue  # 如果在列表中，则跳过此行
                 
                 # 忽略带'*'的默认分区汇总行
                 if '*' in partition_name:
@@ -359,7 +407,8 @@ def update_slurm_partition_status():
         pipe.execute()
 
         if updated_partitions:
-            logger.info(f"成功聚合并更新了 {len(updated_partitions)} 个Slurm分区的状态: {updated_partitions}")
+            # logger.info(f"成功聚合并更新了 {len(updated_partitions)} 个Slurm分区的状态: {updated_partitions}")
+            logger.info(f"当前Slurm分区状态: {partitions_aggregated}")
         else:
             logger.warning("没有成功更新任何Slurm分区状态，请检查sinfo输出和日志。")
 
@@ -465,11 +514,14 @@ def start_workflow(self, structure_file_path: str, workflow_params: dict = {}):
         dict: 包含任务ID和状态URL的信息
     """
     try:
+        ncpus = workflow_params.get('ncpus', 4)
         if workflow_params.get('partition') == 'auto':
             logger.info("检测到 'partition' 参数为 'auto'，开始自动选择分区...")
-            best_partition = _get_best_partition()
+            best_partition = _get_best_partition(ncpus=ncpus)
             workflow_params['partition'] = best_partition
             logger.info(f"已自动选择分区: {best_partition}")
+
+        
         # 创建任务唯一标识符
         task_id = self.request.id
         
@@ -532,7 +584,8 @@ def start_workflow(self, structure_file_path: str, workflow_params: dict = {}):
         )
         raise
 
-# --- 四个独立的定时任务函数 ---
+# --- 四个独立的定时任务函数 --
+Max_Openmx_Batch_Size = config.get('concurrency', {}).get('max_openmx_batch_size', 16)
 @celery_app.task
 def dispatch_openmx_tasks():
     """
@@ -547,6 +600,7 @@ def dispatch_openmx_tasks():
     
     # 计算可提交的任务数量
     slots_available = max(0, max_concurrent - current_running)
+    submission_limit = min(slots_available, Max_Hamgnn_Batch_Size)
     
     if slots_available <= 0:
         logger.info(f"OpenMX并发数已达上限({max_concurrent}),当前运行: {current_running}")
@@ -568,12 +622,12 @@ def dispatch_openmx_tasks():
             logger.error(f"任务 {task_id} 的数据格式无效，跳过")
             continue
     
-    sorted_tasks.sort(key=lambda x: x[2])
+    sorted_tasks = heapq.nsmallest(submission_limit, sorted_tasks, key=lambda x: x[2])
     
     # 处理可提交的任务
     tasks_processed = 0
     for task_id, task_data, _ in sorted_tasks:
-        if tasks_processed >= slots_available:
+        if tasks_processed >= submission_limit:
             break
 
         # 为每个任务创建一个锁，确保同一任务不会被并发处理
@@ -593,7 +647,7 @@ def dispatch_openmx_tasks():
             # 提取任务参数
             structure_file_path = task_data.get('structure_file_path')
             workflow_params = task_data.get('workflow_params', {})
-            logger.info(f"work_para:{workflow_params}")
+            # logger.info(f"work_para:{workflow_params}")
             workdir = task_data.get('workdir')
             
             # 更新任务状态
@@ -689,7 +743,7 @@ def poll_slurm_and_dispatch():
     """
     # 先执行轮询Slurm作业的任务,更新所有作业状态
     poll_result = poll_slurm_jobs()
-    logger.info(f"轮询Slurm作业状态结果: {poll_result}")
+    # logger.info(f"轮询Slurm作业状态结果: {poll_result}")
     
     # 处理openmx等待队列中的任务
     openmx_tasks_processed = process_openmx_waiting_tasks()
@@ -848,7 +902,7 @@ def process_postprocess_waiting_tasks():
             _move_task(task_id, QUEUE_POST_WAITING, QUEUE_COMPLETED, task_data)
             
     return tasks_processed
-Max_Hamgnn_Batch_Size = config.get('hamgnn', {}).get('max_hamgnn_batch_size', 10)
+Max_Hamgnn_Batch_Size = config.get('concurrency', {}).get('max_hamgnn_batch_size', 12)
 @celery_app.task
 def dispatch_hamgnn_tasks():
     """
@@ -1075,6 +1129,8 @@ def handle_hamgnn_task_failure(task_id, task_data, workdir, error_message, statu
     # 将失败的任务直接移到完成队列
     _move_task(task_id, QUEUE_HAMGNN_WAITING, QUEUE_COMPLETED, task_data)
 
+Max_PostProcess_Batch_Size= config.get('concurrency', {}).get('max_postprocess_batch_size', 16)
+
 @celery_app.task
 def dispatch_postprocess_tasks():
     """
@@ -1090,8 +1146,9 @@ def dispatch_postprocess_tasks():
         
         # 计算可提交的任务数量
         slots_available = max(0, max_concurrent - current_running)
+        submission_limit = min(slots_available, Max_PostProcess_Batch_Size)
         
-        if slots_available <= 0:
+        if submission_limit <= 0:
             logger.info(f"后处理并发数已达上限({max_concurrent}),当前运行: {current_running}")
             return f"后处理并发数已达上限({max_concurrent}),跳过调度"
         
@@ -1121,12 +1178,12 @@ def dispatch_postprocess_tasks():
                 _move_task(task_id, QUEUE_POST_WAITING, QUEUE_COMPLETED, json.loads(task_data_json))
                 continue
         
-        sorted_tasks.sort(key=lambda x: x[2])
+        sorted_tasks = heapq.nsmallest(submission_limit, sorted_tasks, key=lambda x: x[2])
         
         # 处理可提交的任务
         tasks_processed = 0
         for task_id, task_data, _ in sorted_tasks:
-            if tasks_processed >= slots_available:
+            if tasks_processed >= submission_limit:
                 break
             
             # 【修正】为每个任务创建一个唯一的锁
