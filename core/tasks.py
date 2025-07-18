@@ -15,6 +15,7 @@ import concurrent
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import psutil
 import heapq
+import random
 # --- 初始化与配置 ---
 # 初始化日志,建议在Celery worker启动时也配置好日志级别
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -206,8 +207,15 @@ def _get_best_partition(ncpus:int=4):
         str: 成功预留资源的分区名。如果没有找到合适的分区，则返回默认分区。
     """
     partitions_key = 'slurm_partition_status'
-    default_partition = config.get("slurm_monitor", {}).get("default_partition", "chu") 
+
     
+    temp_val = config.get("slurm_monitor", {}).get("default_partition", "chu")
+    # 检查 temp_val 是否为列表，然后赋给 default_partition
+    # 如果是列表，则随机选择一个元素
+    # 如果不是列表（即字符串），则直接使用该值
+    default_partition = random.choice(temp_val) if isinstance(temp_val, list) else temp_val
+
+
     AVAILABLE_STATES = {'idle', 'mixed', 'up', 'alloc', 'aggregated'}
 
     try:
@@ -654,7 +662,7 @@ def dispatch_openmx_tasks():
             if workflow_params.get('partition') == 'auto':
                 logger.info("检测到 'partition' 参数为 'auto'，开始自动选择分区...")
                 best_partition = _get_best_partition(ncpus=ncpus)
-                workflow_params['partition'] = best_partition
+                workflow_params_openmx['partition'] = best_partition
                 logger.info(f"已自动选择分区: {best_partition}")
                 # logger.info(f"work_para:{workflow_params}")
             workdir = task_data.get('workdir')
