@@ -16,6 +16,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import psutil
 import heapq
 import random
+import asyncio
+import httpx # 引入 httpx
+from redis import asyncio as aioredis # 引入异步redis
+
 # --- 初始化与配置 ---
 # 初始化日志,建议在Celery worker启动时也配置好日志级别
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -35,6 +39,8 @@ except redis.exceptions.ConnectionError as e:
     logger.error(f"无法连接到Redis,请确保Redis服务正在运行: {e}")
     # 在无法连接到Redis时,抛出异常,阻止worker启动
     raise
+
+
 
 # 初始化Celery应用
 # 'tasks'是当前模块的名称
@@ -160,6 +166,49 @@ def _move_task(task_id, from_queue, to_queue, task_data=None):
     
     # 达到最大重试次数仍失败
     logger.warning(f"移动任务 {task_id} 从 {from_queue} 到 {to_queue} 失败，达到最大重试次数 ({max_retries})")
+    return False
+
+async def _async_move_task(redis_cli: aioredis.Redis, task_id: str, from_queue: str, to_queue: str, task_data: dict) -> bool:
+    """
+    _move_task 的异步版本，接收一个异步redis客户端作为参数。
+    """
+    max_retries = 3
+    retry_count = 0
+    while retry_count < max_retries:
+        try:
+            async with redis_cli.pipeline() as pipe:
+                await pipe.watch(from_queue)
+                if not await pipe.hexists(from_queue, task_id):
+                    await pipe.unwatch()
+                    logger.debug(f"任务 {task_id} 已不在队列 {from_queue} 中，异步移动取消")
+                    return False
+                
+                # 更新状态日志
+                task_data['status_log'] = task_data.get('status_log', [])
+                task_data['status_log'].append({
+                    'timestamp': time.time(),
+                    'from_queue': from_queue,
+                    'to_queue': to_queue,
+                    'worker_id': f"async-{os.getpid()}",
+                    'move_attempt': retry_count + 1
+                })
+                
+                pipe.multi()
+                pipe.hdel(from_queue, task_id)
+                pipe.hset(to_queue, task_id, json.dumps(task_data))
+                
+                results = await pipe.execute()
+                return all(results)
+        except aioredis.WatchError:
+            logger.debug(f"异步移动任务 {task_id} 时发生竞争，第 {retry_count + 1} 次重试")
+            retry_count += 1
+            await asyncio.sleep(0.1 * (2 ** retry_count))
+            continue
+        except Exception as e:
+            logger.error(f"异步移动任务 {task_id} 时发生严重错误: {e}")
+            return False
+            
+    logger.warning(f"异步移动任务 {task_id} 达到最大重试次数，移动失败")
     return False
 
 def _write_failure_file(workdir, stage_name, details):
@@ -921,214 +970,139 @@ def process_postprocess_waiting_tasks():
     return tasks_processed
 Max_Hamgnn_Batch_Size = config.get('concurrency', {}).get('max_hamgnn_batch_size', 12)
 @celery_app.task
-def dispatch_hamgnn_tasks():
+def dispatch_hamgnn_tasks_async():
     """
-    F3定时任务: 将hamgnn等待队列的任务提交给hamgnnServer,完成后转移到后处理等待队列
-    此版本允许多个进程并行处理不同的任务，每个进程只处理未被锁定的任务
+    F3定时任务的【异步重构版本】: 这是一个同步的Celery任务，作为异步流程的启动器。
     """
     try:
-        # 从配置中获取最大并发数
+        # 【关键】使用 asyncio.run() 启动并运行整个异步调度流程直到完成
+        result_message = asyncio.run(run_hamgnn_dispatcher())
+        logger.info(result_message)
+        return result_message
+    except Exception as e:
+        logger.error(f"HamGNN异步调度任务执行时发生顶层错误: {traceback.format_exc()}")
+        return f"执行错误: {str(e)}"
+
+
+async def run_hamgnn_dispatcher():
+    """
+    实际的异步调度器逻辑。它负责创建客户端并编排任务。
+    """
+    # 【关键】在此函数内创建异步客户端，确保它们属于同一个事件循环
+    redis_cli = aioredis.from_url("redis://localhost:6379/0", decode_responses=True)
+
+    try:
         max_concurrent = config.get('concurrency', {}).get('max_hamgnn_jobs', 5)
-        
-        # 创建一个Redis键来跟踪当前运行的HamGNN作业数
         current_running_key = 'running_hamgnn_jobs'
         
-        # 使用Redis的原子操作初始化计数器(如果不存在)
-        redis_client.setnx(current_running_key, 0)
+        await redis_cli.setnx(current_running_key, 0)
+        current_running = int(await redis_cli.get(current_running_key) or 0)
         
-        # 获取当前运行的HamGNN作业数
-        current_running = int(redis_client.get(current_running_key) or 0)
-        
-        # 计算可提交的任务数量
         slots_available = max(0, max_concurrent - current_running)
         submission_limit = min(slots_available, Max_Hamgnn_Batch_Size)
         
         if submission_limit <= 0:
-            logger.info(f"HamGNN并发数已达上限({max_concurrent}),当前运行: {current_running}")
-            return f"HamGNN并发数已达上限({max_concurrent}),跳过调度"
-        
-        # 获取hamgnn等待队列中的所有任务
-        hamgnn_tasks = redis_client.hgetall(QUEUE_HAMGNN_WAITING)
-        
+            return f"HamGNN并发数已达上限({max_concurrent}),当前运行: {current_running}"
+            
+        hamgnn_tasks = await redis_cli.hgetall(QUEUE_HAMGNN_WAITING)
         if not hamgnn_tasks:
             return "没有等待中的HamGNN任务"
-        
-        # 按创建时间排序(先进先出)
-        sorted_tasks = []
+
+        sorted_tasks_meta = []
         for task_id, task_data_json in hamgnn_tasks.items():
             try:
                 task_data = json.loads(task_data_json)
-                sorted_tasks.append((task_id, task_data, task_data.get('created_at', 0)))
+                sorted_tasks_meta.append((task_id, task_data, task_data.get('created_at', 0)))
             except json.JSONDecodeError:
-                logger.error(f"任务 {task_id} 的数据格式无效，跳过")
                 continue
-
-        sorted_tasks = heapq.nsmallest(submission_limit, sorted_tasks, key=lambda x: x[2])
-
-        # 存储成功处理的任务数量
-        tasks_processed = 0
-        tasks_locked = 0
-        tasks_already_processed = 0
+        tasks_to_process = heapq.nsmallest(submission_limit, sorted_tasks_meta, key=lambda x: x[2])
         
-        # 创建线程池 - 只使用当前可用的槽位数量的线程
-        with ThreadPoolExecutor(max_workers=min(submission_limit, len(sorted_tasks))) as executor:
-            futures = {}  # 使用字典存储future -> task_info的映射
-            task_locks = []  # 存储已获取的任务锁，便于后续释放
-            
-            # 尝试锁定并提交任务 - 注意这里不限制处理的任务数量为slots_available
-            # 而是尝试锁定所有任务，只有成功锁定的才会被提交，从而实现细粒度控制
-            for task_id, task_data, _ in sorted_tasks:
-                # 为每个任务创建一个锁，确保同一任务不会被并发处理
-                task_lock_key = f"hamgnn_processing_lock:{task_id}"
-                # 检查任务是否已处理过(幂等性检查)
-                processed_key = f"hamgnn_processed:{task_id}"
-                if redis_client.exists(processed_key):
-                    logger.info(f"HamGNN任务 {task_id} 已处理过，跳过")
-                    tasks_already_processed += 1
-                    continue
-                
-                # 尝试获取锁，如果已被锁定则跳过 - 这里是细粒度控制的关键
-                # nx=True确保只有一个进程能获取锁，其他进程会立即返回False而不是阻塞
-                if not redis_client.set(task_lock_key, "1", nx=True, ex=600):  # 10分钟锁
-                    logger.info(f"HamGNN任务 {task_id} 正在被其他进程处理，跳过")
-                    tasks_locked += 1
-                    continue
-                
-                # 记录已获取的锁
-                task_locks.append(task_lock_key)
-                
-                try:
-                    # 再次检查任务是否在队列中(可能在获取锁的过程中被其他进程移除)
-                    if not redis_client.hexists(QUEUE_HAMGNN_WAITING, task_id):
-                        logger.info(f"任务 {task_id} 不在HamGNN队列中，可能已被处理")
-                        redis_client.delete(task_lock_key)  # 释放锁
-                        task_locks.remove(task_lock_key)
-                        continue
-                    
-                    # 提取任务参数
-                    workdir = task_data.get('workdir')
-                    workflow_params = task_data.get('workflow_params', {})
-                    
-                    # 构建预测URL和请求参数
-                    predict_url = get_server_url("hamgnn") + "/predict"
-                    graph_data_path = os.path.join(workdir, "graph_data.npz")
-                    output_path = workdir
-                    logger.info(f"任务 {task_id} 的图数据路径: {graph_data_path}, 输出路径: {output_path}")
-                    evaluate_loss = workflow_params.get('evaluate_loss', False)
-                    
-                    # 更新任务状态
-                    task_data['status'] = 'submitting_to_hamgnn'
-                    task_data['status_log'] = task_data.get('status_log', [])
-                    task_data['status_log'].append({
-                        'timestamp': time.time(),
-                        'status': 'submitting_to_hamgnn',
-                        'message': '正在提交给HamGNN预测服务',
-                        'worker_id': os.getpid()  # 记录处理该任务的worker ID
-                    })
-                    
-                    # 更新Redis中的任务数据
-                    redis_client.hset(QUEUE_HAMGNN_WAITING, task_id, json.dumps(task_data))
-                    
-                    # 创建请求参数(添加请求ID确保幂等性)
-                    request_id = f"{task_id}_{int(time.time())}"
-                    job_ticket = {
-                        "request_id": request_id,
-                        "graph_data_path": str(graph_data_path), 
-                        "output_path": output_path, 
-                        "evaluate_loss": evaluate_loss
-                    }
-                    
-                    # 提交给HamGNN服务器
-                    logger.info(f"提交任务 {task_id} 到HamGNN服务器: {predict_url}")
-                    
-                    # 增加运行计数(使用原子操作)
-                    redis_client.incr(current_running_key)
-                    
-                    # 将请求提交到线程池
-                    future = executor.submit(submit_request, predict_url, job_ticket)
-                    futures[future] = (task_id, task_data, workdir, task_lock_key)
-                    
-                except Exception as e:
-                    # 释放锁
-                    redis_client.delete(task_lock_key)
-                    if task_lock_key in task_locks:
-                        task_locks.remove(task_lock_key)
-                    
-                    # 减少运行计数
-                    redis_client.decr(current_running_key)
-                    
-                    logger.error(f"准备提交任务 {task_id} 到HamGNN服务器时出错: {e}")
-                    handle_hamgnn_task_failure(task_id, task_data, workdir, str(e), "准备提交到HamGNN服务器时出错")
-            
-            # 处理完成的任务，按照完成顺序处理(而非提交顺序)
-            # 设置超时，防止线程池阻塞
-            timeout = max(600, min(30 * len(futures), 3600))  # 最少10分钟，最多1小时
-            
-            try:
-                for future in as_completed(futures, timeout=timeout):
-                    task_id, task_data, workdir, task_lock_key = futures[future]
-                    
-                    try:
-                        # 获取请求结果
-                        response_data = future.result()
-                        hamiltonian_path = response_data.get('output_file', None)
-                        
-                        if not hamiltonian_path:
-                            raise ValueError("预测结果中未包含哈密顿量文件路径。请检查预测服务的输出。")
-                            
-                        # 更新任务数据
-                        task_data['hamiltonian_path'] = hamiltonian_path
-                        task_data['status'] = 'hamgnn_completed'
-                        task_data['status_log'].append({
-                            'timestamp': time.time(),
-                            'status': 'hamgnn_completed',
-                            'message': 'HamGNN预测已完成'
-                        })
-                        
-                        # 将任务从hamgnn等待队列移动到后处理等待队列
-                        if _move_task(task_id, QUEUE_HAMGNN_WAITING, QUEUE_POST_WAITING, task_data):
-                            logger.info(f"任务 {task_id} 的HamGNN预测已完成,已移至后处理等待队列")
-                            tasks_processed += 1
-                            
-                            # 标记任务为已处理(用于幂等性检查)
-                            # 设置较长的过期时间，比如7天
-                            redis_client.set(f"hamgnn_processed:{task_id}", "1", ex=7*24*60*60)
-                        else:
-                            logger.error(f"移动任务 {task_id} 到后处理等待队列失败")
-                            
-                    except Exception as e:
-                        # 处理请求失败
-                        logger.error(f"HamGNN请求执行失败: {e}")
-                        handle_hamgnn_task_failure(task_id, task_data, workdir, str(e), "HamGNN请求执行失败")
-                    
-                    finally:
-                        # 无论成功还是失败，都要减少运行计数和释放锁
-                        redis_client.decr(current_running_key)
-                        redis_client.delete(task_lock_key)
-                        if task_lock_key in task_locks:
-                            task_locks.remove(task_lock_key)
-            except concurrent.futures.TimeoutError:
-                # 处理整体超时情况
-                logger.error(f"线程池执行超时，可能有HamGNN任务未完成")
-                # 取消所有未完成的任务
-                for future in [f for f in futures if not f.done()]:
-                    future.cancel()
-                    task_id, task_data, workdir, task_lock_key = futures[future]
-                    logger.error(f"任务 {task_id} 在超时时间内未完成，已取消")
-                    handle_hamgnn_task_failure(task_id, task_data, workdir, "处理超时", "任务在超时时间内未完成，已取消")
-                    # 减少计数器和释放锁
-                    redis_client.decr(current_running_key)
-                    redis_client.delete(task_lock_key)
-    
-    except Exception as e:
-        logger.error(f"HamGNN调度任务执行时发生未知错误: {e}")
-        return f"执行错误: {str(e)}"
-    
-    return f"处理了 {tasks_processed} 个HamGNN任务，{tasks_locked} 个任务正在被其他进程处理，{tasks_already_processed} 个任务已处理过"
+        if not tasks_to_process:
+            return "没有可处理的HamGNN任务"
 
-def handle_hamgnn_task_failure(task_id, task_data, workdir, error_message, status_message):
-    """处理HamGNN任务失败的辅助函数，集中处理失败逻辑"""
-    # 更新任务状态为失败
+        # 【关键】使用 async with 创建 http 客户端
+        async with httpx.AsyncClient(timeout=TIMEOUT) as http_client:
+            coroutines = []
+            for task_id, task_data, _ in tasks_to_process:
+                # 【关键】将客户端作为参数传递
+                coroutines.append(process_single_hamgnn_task(http_client, redis_cli, task_id, task_data))
+            
+            # 【关键】并发执行所有任务
+            results = await asyncio.gather(*coroutines, return_exceptions=True)
+
+        success_count = sum(1 for r in results if r is True)
+        return f"异步处理了 {len(results)} 个任务, 成功 {success_count} 个"
+
+    finally:
+        # 【关键】确保在使用后关闭Redis连接池
+        await redis_cli.close()
+
+
+
+async def process_single_hamgnn_task(http_client: httpx.AsyncClient, redis_cli: aioredis.Redis, task_id: str, task_data: dict):
+    """
+    处理单个HamGNN任务的协程。
+    所有客户端都作为参数传入，以确保它们属于同一个事件循环。
+    """
+    task_lock_key = f"hamgnn_processing_lock:{task_id}"
+    current_running_key = 'running_hamgnn_jobs'
+    workdir = task_data.get('workdir')
+
+    if not await redis_cli.set(task_lock_key, "1", nx=True, ex=600):
+        logger.info(f"HamGNN任务 {task_id} 正在被其他进程处理，跳过")
+        return False
+
+    try:
+        if not await redis_cli.hexists(QUEUE_HAMGNN_WAITING, task_id):
+            logger.info(f"任务 {task_id} 不在HamGNN队列中，可能已被处理")
+            return False
+
+        predict_url = get_server_url("hamgnn") + "/predict"
+        graph_data_path = os.path.join(workdir, "graph_data.npz")
+        
+        job_ticket = {
+            "request_id": f"{task_id}_{int(time.time())}",
+            "graph_data_path": str(graph_data_path), 
+            "output_path": workdir, 
+            "evaluate_loss": task_data.get('workflow_params', {}).get('evaluate_loss', False)
+        }
+        
+        await redis_cli.incr(current_running_key)
+        
+        logger.info(f"异步提交任务 {task_id} 到HamGNN服务器: {predict_url}")
+        response = await http_client.post(predict_url, json=job_ticket)
+        response.raise_for_status()
+        
+        response_data = response.json()
+        hamiltonian_path = response_data.get('output_file')
+        if not hamiltonian_path:
+            raise ValueError("预测结果中未包含哈密顿量文件路径")
+
+        task_data['hamiltonian_path'] = hamiltonian_path
+        task_data['status'] = 'hamgnn_completed'
+        task_data['status_log'].append({ 'timestamp': time.time(), 'status': 'hamgnn_completed', 'message': 'HamGNN预测已完成' })
+        
+        if await _async_move_task(redis_cli, task_id, QUEUE_HAMGNN_WAITING, QUEUE_POST_WAITING, task_data):
+            logger.info(f"任务 {task_id} 的HamGNN预测已完成(异步), 已移至后处理等待队列")
+            await redis_cli.set(f"hamgnn_processed:{task_id}", "1", ex=7*24*60*60)
+            return True
+        else:
+            logger.error(f"异步移动任务 {task_id} 到后处理等待队列失败")
+            return False
+
+    except Exception as e:
+        logger.error(f"处理异步HamGNN任务 {task_id} 时出错: {e}")
+        await _async_handle_hamgnn_task_failure(redis_cli, task_id, task_data, workdir, str(e), f"异步请求执行失败: {traceback.format_exc()}")
+        return e
+    finally:
+        await redis_cli.decr(current_running_key)
+        await redis_cli.delete(task_lock_key)
+
+
+async def _async_handle_hamgnn_task_failure(redis_cli: aioredis.Redis, task_id: str, task_data: dict, workdir: str, error_message: str, status_message: str):
+    """
+    handle_hamgnn_task_failure 的异步版本，接收一个异步redis客户端作为参数。
+    """
     task_data['status'] = 'hamgnn_failed'
     task_data['error'] = error_message
     task_data['status_log'] = task_data.get('status_log', [])
@@ -1137,14 +1111,16 @@ def handle_hamgnn_task_failure(task_id, task_data, workdir, error_message, statu
         'status': 'hamgnn_failed',
         'message': f'HamGNN预测失败: {status_message}'
     })
+    
+    # 文件写入是同步操作，可以直接调用
     _write_failure_file(
         workdir=workdir,
-        stage_name='2/4: HamGNN预测', # 注意阶段名称的准确性
-        details=f'HamGNN预测失败: {status_message}'
+        stage_name='2/4: HamGNN预测',
+        details=f'HamGNN预测失败: {error_message}'
     )
     
-    # 将失败的任务直接移到完成队列
-    _move_task(task_id, QUEUE_HAMGNN_WAITING, QUEUE_COMPLETED, task_data)
+    # 调用异步移动函数
+    await _async_move_task(redis_cli, task_id, QUEUE_HAMGNN_WAITING, QUEUE_COMPLETED, task_data)
 
 Max_PostProcess_Batch_Size= config.get('concurrency', {}).get('max_postprocess_batch_size', 16)
 
@@ -1488,12 +1464,19 @@ def setup_periodic_tasks(sender, **kwargs):
     )
     
     # F3: 调度HamGNN任务
+    # dispatch_hamgnn_interval = periodic_tasks_config.get('dispatch_hamgnn_interval', 5.0)
+    # logger.info(f"设置HamGNN调度定时任务,执行间隔: {dispatch_hamgnn_interval} 秒。")
+    # sender.add_periodic_task(
+    #     dispatch_hamgnn_interval, 
+    #     dispatch_hamgnn_tasks.s(), 
+    #     name=f'dispatch HamGNN tasks every {dispatch_hamgnn_interval}s'
+    # )
     dispatch_hamgnn_interval = periodic_tasks_config.get('dispatch_hamgnn_interval', 5.0)
     logger.info(f"设置HamGNN调度定时任务,执行间隔: {dispatch_hamgnn_interval} 秒。")
     sender.add_periodic_task(
         dispatch_hamgnn_interval, 
-        dispatch_hamgnn_tasks.s(), 
-        name=f'dispatch HamGNN tasks every {dispatch_hamgnn_interval}s'
+        dispatch_hamgnn_tasks_async.s(), # 注意这里调用的是新函数
+        name=f'dispatch HamGNN tasks ASYNC every {dispatch_hamgnn_interval}s'
     )
     
     # F4: 调度后处理任务
