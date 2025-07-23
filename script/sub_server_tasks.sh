@@ -2,7 +2,7 @@
 #SBATCH --partition chu      
 #SBATCH --nodes=1                     
 #SBATCH --ntasks=1
-#SBATCH --nodelist=c2               # 
+#SBATCH --nodelist=c5               # 
 #SBATCH --cpus-per-task=48       # 8-4090 <= 12 per gpu   4v100  <=4  per gpu
 #SBATCH --mem=32G               # 8-4090 <= 100G per gpu 4v100  <=50G per gpu 
 #SBATCH --output=./log/TaskServerOutput.log  

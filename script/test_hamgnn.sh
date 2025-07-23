@@ -2,11 +2,11 @@
 #SBATCH --partition chu       
 #SBATCH --nodes=1
 #SBATCH --ntasks=1               # 
-#SBATCH --cpus-per-task=64      # 8-4090 <= 12 per gpu   4v100  <=4  per gpu
-#SBATCH --mem=64G               # 8-4090 <= 100G per gpu 4v100  <=50G per gpu 
-#SBATCH --output=./log/test_hamgnnOitput.log  
-#SBATCH --error=./log/test_hamgnnInfo.log  
-#SBATCH --job-name=test_postprocess
+#SBATCH --cpus-per-task=8      # 8-4090 <= 12 per gpu   4v100  <=4  per gpu
+#SBATCH --mem=8G               # 8-4090 <= 100G per gpu 4v100  <=50G per gpu
+#SBATCH --output=./log/test_hamgnnOutput.log
+#SBATCH --error=./log/test_hamgnnInfo.log
+#SBATCH --job-name=test_hamgnn
 
 ulimit -s unlimited
 module purge
@@ -33,6 +33,7 @@ Job Start Time:   $(date +"%Y-%m-%d %H:%M:%S")
 ============================================================
 
 EOF
+
 python --version
 
-python /ssd/work/ycxie/hamgnn/testopenmx/HamGNN-Flow/test/hamgnn_test.py
+python -m test.hamgnn_test
