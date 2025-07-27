@@ -253,6 +253,10 @@ class PostProcessCommunicator(BaseCommunicator):
             return hamiltonian_path, graph_data_path, band_para, output_path
         except Exception as e:
             logging.error(f"预处理输入数据时发生错误: {e}")
+            try:
+                logging.error(f"Error graph_data_path: {(request.get_json())['graph_data_path']}")
+            except:
+                pass
             return jsonify({"error": f"无法处理输入数据: {e}"}), 400        
 
     def pack_response(self,response_data: dict):
