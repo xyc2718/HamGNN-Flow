@@ -18,6 +18,7 @@ default_input_parameters:
     ScfCriterion: 1.0e-6
     partition: "chu"
     ncpus: 4
+    mem: 16
     nao_max: 26
     soc_switch: false
 

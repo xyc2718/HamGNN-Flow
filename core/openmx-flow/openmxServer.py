@@ -17,14 +17,14 @@ from ..utils import write_server_info, find_free_port, get_package_path
 from .utils_openmx.graph_data_gen import graph_data_gen
 from .utils_openmx.poscar2openmx import poscar_to_openmxfile
 from ..communication import OpenmxCommunicator as Communicator, BaseCommunicator
+from ..api import openmx_api
 import argparse
 LOGGING_LEVEL= logging.INFO
 OPENMX_CONFIG_PATH = get_package_path("openmx-flow/openmx_basic_config.yaml")
 class OpenMXServer:
     def __init__(self, config_path=None):
         """
-        初始化OpenMX服务器，包括加载配置和模型。
-        这个方法对应于服务器的“设置”或“准备”阶段。
+        初始化OpenMX服务器
         """
         self.app = Flask(__name__)
         self.app.logger.setLevel(LOGGING_LEVEL)
@@ -39,7 +39,6 @@ class OpenMXServer:
                 raise FileNotFoundError(f"OpenMX配置文件不存在: {self.openmx_config_path}")
         self.app.logger.debug(f"OpenMX配置文件路径: {self.openmx_config_path}")
         self.load_basic_config()
-        self.app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 设置最大请求体大小为100MB
         self._register_routes()
         self.type = "OpenMXServer"  # 服务器类型标识
         self.app.logger.info(f"OpenMX服务器配置已加载: {self.config}")
@@ -153,6 +152,7 @@ class OpenMXServer:
 #SBATCH --nodes=1                         # Number of nodes
 #SBATCH --ntasks=1                         # Total MPI tasks ntasks*cpu-per-task <= [64-xiang;64-yang;96-xu;96-chu]
 #SBATCH --cpus-per-task={process_config.get("ncpus", 4)}                 # CPUs per task (OpenMP threads)
+#SBATCH --mem={process_config.get("mem", 16)}G                # Memory per node
 #SBATCH --time=48:00:00                   # Wall‐time limit (HH:MM:SS)
 #SBATCH --output={os.path.join(workdir,"openmx.%j.out")}              # STDOUT file (%j = JobID)
 #SBATCH --error={os.path.join(workdir,"openmx.%j.err")}               # STDERR file
@@ -206,6 +206,7 @@ conda run -n hamgnn python {get_package_path("openmx-flow/utils_openmx/graph_dat
 #SBATCH --nodes=1                         # Number of nodes
 #SBATCH --ntasks=1                         # Total MPI tasks ntasks*cpu-per-task <= [64-xiang;64-yang;96-xu;96-chu]
 #SBATCH --cpus-per-task={process_config.get("ncpus", 16)}                 # CPUs per task (OpenMP threads)
+#SBATCH --mem={process_config.get("mem", 16)}G               
 #SBATCH --time=48:00:00                   # Wall‐time limit (HH:MM:SS)
 #SBATCH --output={os.path.join(workdir,"openmx.%j.out")}              # STDOUT file (%j = JobID)
 #SBATCH --error={os.path.join(workdir,"openmx.%j.err")}               # STDERR file
@@ -330,14 +331,8 @@ conda run -n hamgnn python {get_package_path("openmx-flow/utils_openmx/graph_dat
                 return jsonify({"error": "服务器内部错误，请查看服务器日志了解详情。", "error_type": str(type(e).__name__),"workdir": str(workdir)}), 500
         @self.app.route("/api", methods=['GET'])
         def api():
-            return jsonify({
-                "endpoints": {
-                    "/health": "健康检查，返回服务器状态",
-                    "/pre_process": "预处理请求，转换结构体为OpenMX输入文件并提交计算",
-                    "/graph": "生成图数据请求，转换结构体为图数据",
-                    "/scf": "运行OpenMX SCF计算请求"
-                }
-            }), 200
+            return openmx_api(self), 200
+
 
     def run(self,num_threads):
         """

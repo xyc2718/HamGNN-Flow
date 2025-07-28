@@ -308,7 +308,7 @@ class kpoints_generator:
             # store which directions are the periodic ones
             self._per=per
         
-   # -------------------- 修复后的 k_path 函数 (最终版) --------------------
+
     def k_path(self,kpts,nk,report=True):
         logging.info("this the new k_path function")
 
@@ -357,40 +357,66 @@ class kpoints_generator:
             dk = k_list[n]-k_list[n-1]
             dklen = np.sqrt(np.dot(dk,np.dot(k_metric,dk)))
             k_node[n]=k_node[n-1]+dklen
-        
+
+
         # ！！！！！！！！！！ 修复开始 ！！！！！！！！！！
-        # Find indices of nodes in interpolated list
         node_index=[0]
-        for n in range(1,n_nodes-1):
-            frac = k_node[n] / k_node[-1]
+        # 在分配索引时，确保不超出 nk-1 的边界
+        for n in range(1,n_nodes - 1):
+            # 避免 k_node[-1] 为零的情况
+            if k_node[-1] == 0:
+                frac = 0
+            else:
+                frac = k_node[n] / k_node[-1]
+            
             new_index = int(round(frac * (nk - 1)))
 
-            logging.info(f">>> [DEBUG-STEP-1] In corrected logic block. n={n}, raw_new_index={new_index}")
-            # 确保新索引至少比前一个大1，防止分配到相同索引
+            # 确保索引严格递增，但不能超过最大值
             if new_index <= node_index[-1]:
-                new_index = node_index[-1] + 1
+                new_index = min(node_index[-1] + 1, nk - 1)
+            
             node_index.append(new_index)
-        
-        # 确保最后一个索引是 nk-1 并且比前一个大
+
+        # 总是确保最后一个节点指向 nk-1
         if n_nodes > 1:
-            if (nk - 1) <= node_index[-1]:
-                node_index.append(node_index[-1] + 1)
-            else:
-                node_index.append(nk-1)
-        
-        # 如果路径点过多导致索引超出范围，则进行裁剪
-        if node_index[-1] >= nk:
-            print("Warning: Too many k-path nodes for the given nk. Some segments might be very short.")
-            # 将超出部分的索引修正为 nk-1
-            node_index = [min(i, nk - 1) for i in node_index]
-            # 再次确保严格递增，去除重复
-            final_indices = []
-            for i in node_index:
-                if not final_indices or i > final_indices[-1]:
-                    final_indices.append(i)
-            node_index = final_indices
+            node_index.append(nk-1)
 
         # ！！！！！！！！！！ 修复结束 ！！！！！！！！！！
+        
+        # # ！！！！！！！！！！ 修复开始 ！！！！！！！！！！
+        ####这个逻辑在极少数情况下会导致过多的点被裁剪####
+        # # Find indices of nodes in interpolated list
+        # node_index=[0]
+        # for n in range(1,n_nodes-1):
+        #     frac = k_node[n] / k_node[-1]
+        #     new_index = int(round(frac * (nk - 1)))
+
+        #     logging.info(f">>> [DEBUG-STEP-1] In corrected logic block. n={n}, raw_new_index={new_index}")
+        #     # 确保新索引至少比前一个大1，防止分配到相同索引
+        #     if new_index <= node_index[-1]:
+        #         new_index = node_index[-1] + 1
+        #     node_index.append(new_index)
+        
+        # # 确保最后一个索引是 nk-1 并且比前一个大
+        # if n_nodes > 1:
+        #     if (nk - 1) <= node_index[-1]:
+        #         node_index.append(node_index[-1] + 1)
+        #     else:
+        #         node_index.append(nk-1)
+        
+        # # 如果路径点过多导致索引超出范围，则进行裁剪
+        # if node_index[-1] >= nk:
+        #     print("Warning: Too many k-path nodes for the given nk. Some segments might be very short.")
+        #     # 将超出部分的索引修正为 nk-1
+        #     node_index = [min(i, nk - 1) for i in node_index]
+        #     # 再次确保严格递增，去除重复
+        #     final_indices = []
+        #     for i in node_index:
+        #         if not final_indices or i > final_indices[-1]:
+        #             final_indices.append(i)
+        #     node_index = final_indices
+
+        # # ！！！！！！！！！！ 修复结束 ！！！！！！！！！！
         
         # initialize two arrays temporarily with zeros
         #  array giving accumulated k-distance to each k-point

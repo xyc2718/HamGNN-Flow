@@ -13,6 +13,7 @@ from .tasks import celery_app, start_workflow, redis_client
 from .tasks import QUEUE_PENDING, QUEUE_OPENMX_WAITING, QUEUE_HAMGNN_WAITING, QUEUE_POST_WAITING, QUEUE_COMPLETED
 import traceback
 from .utils import get_package_path, find_free_port, write_server_info
+from .api import orchestrator_api
 import yaml
 LOGGING_LEVEL = logging.INFO
 default_para_path= get_package_path("task_basic_config.yaml")
@@ -126,6 +127,9 @@ class OrchestratorAPI:
             stats['running_postprocess_jobs'] = int(redis_client.get('running_postprocess_jobs') or 0)
             
             return jsonify(stats)
+        @self.app.route("/api", methods=['GET'])
+        def api():
+            return orchestrator_api(self), 200
 
     def run(self, host=None, port=None):
         """启动服务器。"""

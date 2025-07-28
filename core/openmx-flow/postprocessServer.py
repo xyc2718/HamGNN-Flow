@@ -20,6 +20,7 @@ from functools import wraps
 import argparse
 import threading
 import torch
+from ..api import postprocess_api
 LOGGING_LEVEL= logging.INFO
 POSTPROCESS_CONFIG_PATH = get_package_path("openmx-flow/postprocess_basic_config.yaml")
 class PostProcessServer:
@@ -106,6 +107,7 @@ class PostProcessServer:
 #SBATCH --nodes=1                         # Number of nodes
 #SBATCH --ntasks=1                         # Total MPI tasks ntasks*cpu-per-task <= [64-xiang;64-yang;96-xu;96-chu]
 #SBATCH --cpus-per-task={process_config.get("ncpus", 4)}                 # CPUs per task (OpenMP threads)
+#SBATCH --mem={process_config.get("mem", 16)}G       
 #SBATCH --time=48:00:00                   # Wall‐time limit (HH:MM:SS)
 #SBATCH --output={os.path.join(workdir,"band_cal.%j.out")}              # STDOUT file
 #SBATCH --error={os.path.join(workdir,"band_cal.%j.err")}               # STDERR file
@@ -222,37 +224,13 @@ conda run -n {self.conda_env} python {get_package_path("openmx-flow/utils_openmx
                 return jsonify({"error": "服务器内部错误，请查看服务器日志了解详情。", "error_type": str(type(e).__name__)}), 500
             
         @self.app.route("/api", methods=['GET'])
-        def api():
-            api_format= {
-                "band_cal": {
-                    "method": "POST",
-                    "description": "执行能带计算的后处理操作。",
-                    "parameters": {
-                        "hamiltonian_path": "哈密顿量文件路径",
-                        "graph_data_path": "图数据文件路径",
-                        "band_para": "能带计算参数",
-                        "output_path": "输出路径（可选）",
-                    },
-                    "responses": {
-                        "200": {
-                            "description": "成功响应，包含工作目录和处理配置。",
-                            "content": {
-                                "application/json": {
-                                    "example": {
-                                        "status": "success",
-                                        "workdir": "/path/to/workdir",
-                                        "process_config": {}
-                                    }
-                                }
-                            }
-                        },
-                        "500": {
-                            "description": "服务器内部错误"
-                        }
-                    }
-                }
-            }
-            return jsonify(api_format)
+        def api_info():
+            """
+            返回API的基本信息和使用说明。
+            """
+            return postprocess_api(self), 200
+            
+
 
         
 
