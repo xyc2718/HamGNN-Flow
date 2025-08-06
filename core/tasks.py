@@ -1102,9 +1102,13 @@ async def process_single_hamgnn_task(http_client: httpx.AsyncClient, redis_cli: 
         response.raise_for_status()
         
         response_data = response.json()
-        hamiltonian_path = response_data.get('output_file')
-        if not hamiltonian_path:
-            raise ValueError("HamGNN预测结果中未包含哈密顿量文件路径。")
+        workdir = response_data.get('workdir')
+        workflow_params = task_data.get('workflow_params', {})
+        ifscf=workflow_params.get('ifscf', False)
+        if ifscf:
+            hamiltonian_path = os.path.join(workdir, "scf_hamiltonian.npy")
+        else:
+            hamiltonian_path = os.path.join(workdir, "prediction_hamiltonian.npy")
 
         task_data['hamiltonian_path'] = hamiltonian_path
         task_data['status'] = 'hamgnn_completed'

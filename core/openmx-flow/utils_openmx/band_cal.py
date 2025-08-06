@@ -43,6 +43,7 @@ def band_cal(input,*args, **kwargs):
     filename = input['strcture_name']  # The name of each cif file saved is filename_idx.cif after band calculation band from graph_data.npz
     dpi= input.get('dpi', 300) # The dpi of the saved band structure plot
     save_fig = input.get('save_fig', True) # Whether to save the band structure plot
+    charge = input.get('charge', 0.0) # The charge of the system, default is 0.0
 
     # Ham_type
     if 'Ham_type' in input:
@@ -251,8 +252,10 @@ def band_cal(input,*args, **kwargs):
             
             eigen = np.swapaxes(np.array(eigen), 0, 1)*au2ev # (nbands, nk)
     
-            # plot fermi line    
-            num_electrons = np.sum(num_val[species])
+            # plot fermi line
+            print(np.sum(num_val[species]))    
+            num_electrons = np.sum(num_val[species])-charge
+            print(f"Number of electrons: {num_electrons}")
             max_val = np.max(eigen[num_electrons-1])
             min_con = np.min(eigen[num_electrons])
             eigen = eigen - max_val
@@ -449,7 +452,9 @@ def band_cal(input,*args, **kwargs):
                 eigen = np.swapaxes(np.array(eigen), 0, 1)*au2ev # (nbands, nk)
 
                 # plot fermi line    
-                num_electrons = np.sum(num_val[species])
+                print(np.sum(num_val[species]))    
+                num_electrons = np.sum(num_val[species])-charge
+                print(f"Number of electrons: {num_electrons}")
                 max_val = np.max(eigen[math.ceil(num_electrons/2)-1])
                 min_con = np.min(eigen[math.ceil(num_electrons/2)])
                 eigen = eigen - max_val
@@ -638,7 +643,9 @@ def band_cal(input,*args, **kwargs):
             eigen = np.swapaxes(np.array(eigen), 0, 1)*au2ev # (nbands, nk)
             
             # plot fermi line    
-            num_electrons = np.sum(num_val[species])
+            print(np.sum(num_val[species]))    
+            num_electrons = np.sum(num_val[species])-charge
+            print(f"Number of electrons: {num_electrons}")
             max_val = np.max(eigen[math.ceil(num_electrons/2)-1])
             min_con = np.min(eigen[math.ceil(num_electrons/2)])
             eigen = eigen - max_val

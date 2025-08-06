@@ -38,6 +38,7 @@ import threading
 from functools import wraps
 import time
 import yaml
+from ..api import *
 LOGGING_LEVEL = logging.INFO
 BASIC_CONFIG_PATH = get_package_path("/HamGNN/hamgnn_basic_config.yaml")
 
@@ -230,6 +231,7 @@ class HamGNNServer:
                     l2_loss = torch.mean((hamiltonian_true - hamiltonian_pred) ** 2).item()
                     hamiltonian_output["l1_loss"] = l1_loss
                     hamiltonian_output["l2_loss"] = l2_loss
+                    hamiltonian_output["hamiltonian_scf"] = hamiltonian_true
                     self.app.logger.info(f"平均L1损失: {l1_loss}, 平均L2损失: {l2_loss}")
                 if output_path is not None and output_path != "./":
                     try:
@@ -260,14 +262,18 @@ class HamGNNServer:
                 traceback.print_exc() 
                 return jsonify({"error": "服务器内部错误，请查看服务器日志了解详情。", "error_type": str(type(e).__name__)}), 500
             
-        @self.app.route("/shutdown")
-        def shutdown():
+        @self.app.route("/api", methods=['GET'])
+        def api_info():
             """
-            处理服务器关闭请求。
+            返回API的基本信息和使用说明。
+            这个方法对应于服务器的“信息”阶段。
             """
-            info_file_path = get_package_path("server_info/hamgnn_server_info.json")
-            self.app.logger.info("收到服务器关闭请求，正在进行关闭...")
-            delete_server_info(os.getpid(), info_file_path)
+            return hamgnn_api(self), 200
+
+
+        
+            
+
 
     def run(self, num_threads=4):
         """

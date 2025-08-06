@@ -131,7 +131,9 @@ class OpenMXServer:
                         ElectronicTemperature=process_config.get("ElectronicTemperature", 100),
                         energycutoff=process_config.get("energycutoff", 150),
                         maxIter=process_config.get("maxIter", 1),
-                        ScfCriterion=process_config.get("ScfCriterion", 1.0e-6)
+                        ScfCriterion=process_config.get("ScfCriterion", 1.0e-6),
+                        charge=process_config.get("charge", 0.0),
+                        type=process_config.get("type", 'Nomd')
                     )
         self.app.logger.debug(f"转换完成，OpenMX输入文件已保存到: {output_file}")
         return output_file
@@ -184,7 +186,7 @@ EOF
 cd {workdir}
 mpirun -np {process_config.get("ncpus", 4)} {self.openmx_postprocess} {openmx_input_file} > {process_config.get("system_name","SystemName")}.std
 
-conda run -n hamgnn python {get_package_path("openmx-flow/utils_openmx/graph_data_gen.py")} \\
+conda run -n {self.conda_env} python {get_package_path("openmx-flow/utils_openmx/graph_data_gen.py")} \\
         --graph_data_save_path {workdir / "graph_data.npz"} \\
         --dat_file_name {openmx_input_file} \\
         --scf_path {workdir} \\
@@ -198,7 +200,7 @@ conda run -n hamgnn python {get_package_path("openmx-flow/utils_openmx/graph_dat
         self.app.logger.info(f"OpenMX计算作业已提交，Job ID: {job_id}")
         return job_id
 
-    def run_openmx_scf(self, workdir, process_config, openmx_input_file, gen_graph=True):
+    def run_openmx_scf(self,structure, workdir, process_config, openmx_input_file, gen_graph=True):
         """运行OpenMX计算。"""
         sbatch_script = f"""#!/bin/sh
 #SBATCH --job-name=openmx_scf                # Job name
@@ -237,11 +239,32 @@ EOF
 # Launch OpenMX (standard build)
 cd {workdir}
 mpirun -np {process_config.get("ncpus", 16)} {self.openmx} {openmx_input_file}  > {process_config.get("system_name","SystemName")}.std
-mpirun -np {process_config.get("ncpus", 16)} {self.openmx_postprocess} {openmx_input_file}
+"""
+        
+        if process_config.get("type", "Nomd") in ["Opt", "NVE", "NVT_VS","NVT_NH"]:
+            sbatch_script += f"""
+conda run -n {self.conda_env} python {get_package_path("openmx-flow/utils_openmx/poscar2openmx.py")} \\
+    --structure {structure} \\
+    --system_name {process_config.get("system_name", "SystemName")} \\
+    --filename {workdir / (str(Path(openmx_input_file).stem)+"_final.dat")} \\
+    --SpinPolarization {process_config.get("SpinPolarization", 'off')} \\
+    --XcType {process_config.get("XcType", 'GGA-PBE')} \\
+    --ElectronicTemperature {process_config.get("ElectronicTemperature", 100)} \\
+    --energycutoff {process_config.get("energycutoff", 150)} \\
+    --maxIter {process_config.get("maxIter", 1)} \\
+    --ScfCriterion {process_config.get("ScfCriterion", 1.0e-6)} \\
+    --charge {process_config.get("charge", 0.0)} \\
+    --type {process_config.get("type", "Nomd")} \\
+    --mdfile {workdir / process_config.get("system_name", "SystemName")}.md2
+        """
+        
+        sbatch_script += f"""\n
+
+mpirun -np {process_config.get("ncpus", 16)} {self.openmx_postprocess} {workdir / (str(Path(openmx_input_file).stem)+"_final.dat")}
         """
         if gen_graph:
             sbatch_script += f"""\n
-conda run -n hamgnn python {get_package_path("openmx-flow/utils_openmx/graph_data_gen.py")} \\
+conda run -n {self.conda_env} python {get_package_path("openmx-flow/utils_openmx/graph_data_gen.py")} \\
         --graph_data_save_path {workdir / "graph_data.npz"} \\
         --dat_file_name {openmx_input_file}    \\
         --scf_path {workdir} \\
@@ -321,7 +344,7 @@ conda run -n hamgnn python {get_package_path("openmx-flow/utils_openmx/graph_dat
                 self.app.logger.debug(f"接收到的图参数: {graph_para}")
                 process_config=self.set_process_config(graph_para)
                 openmx_input_file=self.transform_structure(structure, workdir, process_config)
-                job_id=self.run_openmx_scf(workdir,process_config,openmx_input_file=openmx_input_file,gen_graph=process_config.get("gen_graph", True))
+                job_id=self.run_openmx_scf(structure, workdir,process_config,openmx_input_file=openmx_input_file,gen_graph=process_config.get("gen_graph", True))
 
                 return self.communicator.pack_response({"job_id": job_id, "workdir": str(workdir),
                                                         "process_config": process_config,"job_type": "scf"})

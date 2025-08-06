@@ -141,11 +141,8 @@ class OrchestratorAPI:
         serve(self.app, host=host, port=port)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='HamGNN 工作流调度服务器')
-    parser.add_argument('--host', help='服务器主机名')
-    parser.add_argument('--port', type=int, help='服务器端口号')
-    
-    args = parser.parse_args()
-    
+    host= (yaml.safe_load(open(default_para_path, 'r', encoding='utf-8'))).get('server', {}).get('host', None)
+    port = (yaml.safe_load(open(default_para_path, 'r', encoding='utf-8'))).get('server', {}).get('port', None)
+
     api_server = OrchestratorAPI()
-    api_server.run(host=args.host, port=args.port)
+    api_server.run(host=host, port=port)

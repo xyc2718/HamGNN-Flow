@@ -140,6 +140,7 @@ class HamGNNCommunicator(BaseCommunicator):
         """
         output_path = hamiltonian_output.get('output_path', None)
         hamiltonian_tensor = hamiltonian_output['hamiltonian']
+        hamiltonian_scf = hamiltonian_output.get('hamiltonian_scf', None)
         return_directly = hamiltonian_output.get('return_directly', False)
         # 步骤4: 现在可以安全地对这个张量进行后续处理了
         if not return_directly:
@@ -150,13 +151,16 @@ class HamGNNCommunicator(BaseCommunicator):
             logging.info(f"预测结果已保存到: {output_file}")
             l1_loss= hamiltonian_output.get('l1_loss', None)
             l2_loss= hamiltonian_output.get('l2_loss', None)
-            if l1_loss is None or l2_loss is None:
+            if l1_loss is not None or l2_loss is not None:
                 json.dump({"l1_loss": l1_loss, "l2_loss": l2_loss}, open(output_file.parent / "loss.json", "w"))
+            if hamiltonian_scf is not None:
+                np.save(output_file.parent / "scf_hamiltonian.npy", hamiltonian_scf.cpu().numpy())
             return jsonify({"output_file": str(output_file),"l1_loss":l1_loss,"l2_loss":l2_loss, "workdir":output_path,"status": "success"}), 200
         else:
             # 如果没有提供输出路径，则直接返回结果
-            result = hamiltonian_tensor.cpu().numpy().tolist()
-            return jsonify({"hamiltonian_matrix": result, "status": "success"}), 200
+            hamiltonian_pre = hamiltonian_tensor.cpu().numpy().tolist()
+            hamiltonian_scf = hamiltonian_scf.cpu().numpy().tolist() if hamiltonian_scf is not None else None
+            return jsonify({"prediction_hamiltonian": hamiltonian_pre, "scf_hamiltonian": hamiltonian_scf, "status": "success"}), 200
 
     def pack_request(self, structure_data: dict) -> tuple:
         # JSON请求体就是字典本身，请求头可以为空或指定application/json
