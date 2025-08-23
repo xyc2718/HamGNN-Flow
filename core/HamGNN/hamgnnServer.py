@@ -56,6 +56,7 @@ class HamGNNServer:
         if not args.config:
             raise ValueError("配置文件路径不能为空，请使用 --config 参数指定。")
         config_path = args.config
+        logging.info(f"加载配置文件: {config_path}")
         self.communicator: BaseCommunicator =  Communicator()
         self.config = self._load_config(config_path=config_path)
         self._setup_device()

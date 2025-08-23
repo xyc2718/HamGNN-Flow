@@ -18,11 +18,11 @@ import natsort
 from tqdm import tqdm
 import re
 from pymatgen.core.periodic_table import Element
-from utils_openmx.utils import *
 import argparse
 import yaml
 import logging
 from pathlib import Path
+import importlib
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 current_dir = Path(__file__).resolve().parent
 parent_dir = current_dir.parent
@@ -34,6 +34,15 @@ read_openmx_path = basic_config.get('read_openmx_path', None) or read_openmx_def
 read_openmx_path = str(read_openmx_path)
 max_SCF_skip = 200
 
+utils_path = os.path.join(os.path.dirname(__file__), "utils.py")
+spec = importlib.util.spec_from_file_location("utils", utils_path)
+utils_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(utils_module)
+kpoints_generator = utils_module.kpoints_generator
+for name in dir(utils_module):
+    if not name.startswith('_'):
+        globals()[name] = getattr(utils_module, name)
+
 logging.debug(f"read_openmx_path: {str(read_openmx_path)}")
 def graph_data_gen(input):
     nao_max = input['nao_max']
@@ -43,6 +52,7 @@ def graph_data_gen(input):
     system_name= input['system_name'] # The system name, used to get scf results if scf applied
     isscf = input.get('ifscf', False) 
     dat_file_name = input['dat_file_name']
+    r_mat = input.get('r_mat', True)
     if isscf:
         std_file_name =system_name+".std" # None if no openmx computation is performed
         scfout_file_name = system_name+".scfout" # If the openmx self-consistent Hamiltonian is not required as the target, "overlap.scfout" can be used instead.
@@ -125,6 +135,7 @@ def graph_data_gen(input):
             raise(ValueError(f'{f_sc} Hs is not found!'))
         
         with open(os.path.join(scf_path, "HS.json"),'r') as load_f:
+            #TODO:对soc分支增加r_mat的处理
             try:
                 load_dict = json.load(load_f)
             except:
@@ -313,6 +324,7 @@ def graph_data_gen(input):
             num_sub_matrix = pos.shape[0] + edge_index.shape[1]
             H = np.zeros((num_sub_matrix, nao_max**2))
             S = np.zeros((num_sub_matrix, nao_max**2))
+
             
             for i, (sub_maxtrix_H, sub_maxtrix_S) in enumerate(zip(Hon, Son)):
                 mask = np.zeros((nao_max, nao_max), dtype=int)
@@ -330,7 +342,35 @@ def graph_data_gen(input):
                 mask = (mask > 0).reshape(-1)
                 H[num + len(z)][mask] = np.array(sub_maxtrix_H)
                 S[num + len(z)][mask] = np.array(sub_maxtrix_S)
+
+
+                # ####调试#####
+                # src, tar = edge_index[0,num], edge_index[1,num]
+                # shift = cell_shift[num]
+                
+                # # 将 sub_maxtrix_H 恢复成一个方块矩阵来计算迹
+                # # 注意: 这里的 sub_maxtrix_H 是一个压平的一维数组
+                # # 您需要根据 src 和 tar 的轨道数来确定矩阵的维度 (n_orb_src, n_orb_tar)
+                # src_z, tar_z = z[src], z[tar]
+                # n_orb_src = len(basis_def[src_z])
+                # n_orb_tar = len(basis_def[tar_z])
+                
+                # # 创建一个临时矩阵来计算迹
+                # temp_mat = np.zeros((nao_max, nao_max))
+                # mask = np.zeros((nao_max, nao_max), dtype=int)
+                # mask[basis_def[src_z][:,None], basis_def[tar_z][None,:]] = 1
+                # mask = (mask > 0).reshape(-1)
+                # temp_mat.flat[mask] = np.array(sub_maxtrix_H)
+                
+                # # 提取我们关心的块
+                # H_block = temp_mat[np.ix_(basis_def[src_z], basis_def[tar_z])]
+
+                # # 打印每个异位矩阵的迹
+                # print(f"Edge {num}: {src}->{tar} with shift {shift}, Trace = {np.trace(H_block)}")
+                # #####
+
                 num = num + 1
+                # logging.debug(f"filling off-site {num}/{len(edge_index[0])}")
         os.system("rm HS.json")
         
         # read H0
@@ -365,8 +405,88 @@ def graph_data_gen(input):
                 mask = (mask > 0).reshape(-1)
                 H0[num + len(z)][mask] = np.array(sub_maxtrix_H)
                 num = num + 1
-        os.system("rm HS.json")
-        
+
+            pos = np.array(load_dict['pos'])
+            edge_index = np.array(load_dict['edge_index'])
+            inv_edge_idx = np.array(load_dict['inv_edge_idx'])
+            #
+            Hon = load_dict['Hon'][0]
+            Hoff = load_dict['Hoff'][0]
+            Son = load_dict['Son']
+            Soff = load_dict['Soff']
+            nbr_shift = np.array(load_dict['nbr_shift'])
+            cell_shift = np.array(load_dict['cell_shift'])
+            
+            # Find inverse edge_index
+            if len(inv_edge_idx) != len(edge_index[0]):
+                print('Wrong info: len(inv_edge_idx) != len(edge_index[0]) !')
+                sys.exit()
+            
+            if r_mat:
+                if 'Pon' not in load_dict or 'Poff' not in load_dict:
+                    raise ValueError("r_mat is True, but 'Pon' or 'Poff' not found in HS.json!")
+                Ron = load_dict['Pon'] # Pon 是一个列表 [Rx_on, Ry_on, Rz_on]
+                Roff = load_dict['Poff'] # Poff 是一个列表 [Rx_off, Ry_off, Rz_off]
+
+            #
+            num_sub_matrix = pos.shape[0] + edge_index.shape[1]
+            if r_mat:
+                R = np.zeros((3, num_sub_matrix, nao_max**2))
+            
+            for i, (sub_maxtrix_H, sub_maxtrix_S) in enumerate(zip(Hon, Son)):
+                mask = np.zeros((nao_max, nao_max), dtype=int)
+                src = z[i]
+                mask[basis_def[src][:,None], basis_def[src][None,:]] = 1
+                mask = (mask > 0).reshape(-1)
+                if r_mat:
+                    # 新格式处理：Pon[i] 包含所有轨道对的 [x,y,z] 坐标
+                    ron_i = np.array(Ron[i])  # 形状: [num_orbital_pairs, 3]
+                    R[0, i, mask] = ron_i[:, 0]  # 填充 Rx
+                    R[1, i, mask] = ron_i[:, 1]  # 填充 Ry
+                    R[2, i, mask] = ron_i[:, 2]  # 填充 Rz
+            
+            num = 0
+            for i, (sub_maxtrix_H, sub_maxtrix_S) in enumerate(zip(Hoff, Soff)):
+                mask = np.zeros((nao_max, nao_max), dtype=int)
+                src, tar = z[edge_index[0,num]], z[edge_index[1,num]]
+                mask[basis_def[src][:,None], basis_def[tar][None,:]] = 1
+                mask = (mask > 0).reshape(-1)
+                            # <--- 新增：填充 off-site 的 R 矩阵
+                if r_mat:
+                    # Poff[i] 包含所有轨道对的 [x,y,z] 坐标
+                    roff_i = np.array(Roff[i])  # 形状: [num_orbital_pairs, 3]
+                    R[0, num + len(z), mask] = roff_i[:, 0]  # 填充 Rx
+                    R[1, num + len(z), mask] = roff_i[:, 1]  # 填充 Ry
+                    R[2, num + len(z), mask] = roff_i[:, 2]  # 填充 Rz
+                num = num + 1
+            if r_mat:
+                            # 在位项修正
+                for iatm in range(len(z)):
+                    center_atom_pos = pos[iatm] # τ_center
+                    S_on_block = S[iatm, :]     # S(R=0) for this atom
+                    
+                    R[0, iatm, :] += center_atom_pos[0] * S_on_block
+                    R[1, iatm, :] += center_atom_pos[1] * S_on_block
+                    R[2, iatm, :] += center_atom_pos[2] * S_on_block
+                    
+                # 异位项修正
+                # 在OpenMX的定义中，中心原子是 edge 的源头 (source atom)
+                for iedge in range(edge_index.shape[1]):
+                    src_atom = edge_index[0, iedge]
+                    center_atom_pos = pos[src_atom] # τ_center
+                    
+                    matrix_idx = len(z) + iedge
+                    S_off_block = S[matrix_idx, :] # S(R) for this edge
+                    
+                    R[0, matrix_idx, :] += center_atom_pos[0] * S_off_block
+                    R[1, matrix_idx, :] += center_atom_pos[1] * S_off_block
+                    R[2, matrix_idx, :] += center_atom_pos[2] * S_off_block
+            os.system("rm HS.json")
+
+        # R_fake = torch.FloatTensor(S.unsqueeze(0).repeat(3, 1, 1))
+
+
+ 
         # save in Data
         graphs[0] = Data(z=torch.LongTensor(z),
                             cell = torch.Tensor(latt[None,:,:]),
@@ -385,7 +505,8 @@ def graph_data_gen(input):
                             Hoff0 = torch.FloatTensor(H0[pos.shape[0]:,:]),
                             Son = torch.FloatTensor(S[:pos.shape[0],:]),
                             Soff = torch.FloatTensor(S[pos.shape[0]:,:]),
-                            doping_charge = torch.FloatTensor([doping_charge]))
+                            doping_charge = torch.FloatTensor([doping_charge]),
+                            R= torch.FloatTensor(R) if r_mat else None)
     if len(graphs) == 0:
         print('No valid data found! Please check the input paths or if the DFT calculations are converged.')
     else:

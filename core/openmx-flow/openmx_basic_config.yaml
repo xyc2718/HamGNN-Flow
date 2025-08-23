@@ -1,10 +1,11 @@
-read_openmx_path: null  # HamGNN-Flow/core/bin/read_openmx
-gsl_path: null  # HamGNN-Flow/core/gsl
-openmx_path: null  # HamGNN-Flow/core/bin/openmx
+read_openmx_path: /ssd/work/ycxie/hamgnn/testopenmx/HamGNN-Flow/core/binr/read_openmx #default: HamGNN-Flow/core/bin/read_openmx
+openmx_postprocess_path: /ssd/work/ycxie/hamgnn/testopenmx/HamGNN-Flow/core/binr/openmx_postprocess  #default: HamGNN-Flow/core/bin/openmx_postprocess
+gsl_path: null  # default: HamGNN-Flow/core/gsl
+openmx_path: null  #default: HamGNN-Flow/core/bin/openmx
 openmx_module: 'compiler/oneAPI/2023.2.0'
 conda_source: '/ssd/app/anaconda3/etc/profile.d/conda.sh'
 conda_env: 'hamgnn'
-DATA_PATH: null  # HamGNN-Flow/core/openmx-flow/data
+DATA_PATH: null  # default: HamGNN-Flow/core/openmx-flow/data
 num_threads: 10  # OpenMX服务器使用的线程数
 default_input_parameters:
     system_name: "SystemName"

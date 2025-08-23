@@ -38,7 +38,7 @@ with open(basic_config_path, 'r', encoding='utf-8') as f:
 DEFAULT_DATA_PATH = os.path.join(parent_dir,"DFT_DATA19")
 DATA_PATH = basic_config.get('DATA_PATH', None) or DEFAULT_DATA_PATH
 def poscar_to_openmxfile(structure, system_name="SystemName",filename="openmxDTA.dat",DosKgrid=(4, 4, 4),
-                         ScfKgrid=(4, 4, 4),SpinPolarization='off',XcType='GGA-PBE',ElectronicTemperature=100,energycutoff=150,maxIter=1,ScfCriterion=1.0e-6,charge=0.0,type='Nomd',mdfile=None):
+                         ScfKgrid=(4, 4, 4),SpinPolarization='off',XcType='GGA-PBE',ElectronicTemperature=100,energycutoff=150,maxIter=1,ScfCriterion=1.0e-6,charge=0.0,type='Nomd',MDmaxIter=100,MDTimeStep=0.5,MDOptcriterion=1.0e-4,mdfile=None):
     """
     Convert a POSCAR file to an OpenMX input file.
     """
@@ -86,9 +86,9 @@ def poscar_to_openmxfile(structure, system_name="SystemName",filename="openmxDTA
                                          # Constraint_Opt|DIIS2|Constraint_DIIS2
   MD.Opt.DIIS.History          4
   MD.Opt.StartDIIS             5         # default=5
-  MD.maxIter                 100         # default=1
-  MD.TimeStep                1.0         # default=0.5 (fs)
-  MD.Opt.criterion          1.0e-4       # default=1.0e-4 (Hartree/bohr)
+  MD.maxIter                 {MDmaxIter}         # default=1
+  MD.TimeStep                {MDTimeStep}         # default=0.5 (fs)
+  MD.Opt.criterion          {MDOptcriterion}       # default=1.0e-4 (Hartree/bohr)
 
   #
   # MO output
@@ -231,6 +231,9 @@ if __name__ == '__main__':
     parser.add_argument('--charge', type=float, default=0.0, help='Total charge of the system')
     parser.add_argument('--type', type=str, default='Nomd', help='MD type (Nomd/Opt/NVE/NVT_VS/NVT_NH)')
     parser.add_argument('--mdfile', type=str, default=None, help='MD file path (optional)')
+    parser.add_argument('--MDmaxIter', type=int, default=100, help='Maximum number of MD iterations')
+    parser.add_argument('--MDTimeStep', type=float, default=0.5, help='MD time step (fs)')
+    parser.add_argument('--MDOptcriterion', type=float, default=1.0e-4, help='MD optimization criterion (Hartree/bohr)')
 
     args = parser.parse_args()
     poscar_to_openmxfile(
@@ -247,5 +250,8 @@ if __name__ == '__main__':
         ScfCriterion=args.ScfCriterion,
         charge=args.charge,
         type=args.type,
-        mdfile=args.mdfile
+        mdfile=args.mdfile,
+        MDmaxIter=args.MDmaxIter,
+        MDTimeStep=args.MDTimeStep,
+        MDOptcriterion=args.MDOptcriterion
     )

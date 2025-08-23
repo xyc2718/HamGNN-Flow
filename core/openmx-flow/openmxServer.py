@@ -133,7 +133,11 @@ class OpenMXServer:
                         maxIter=process_config.get("maxIter", 1),
                         ScfCriterion=process_config.get("ScfCriterion", 1.0e-6),
                         charge=process_config.get("charge", 0.0),
-                        type=process_config.get("type", 'Nomd')
+                        type=process_config.get("type", 'Nomd'),
+                        mdfile=process_config.get("mdfile", None),
+                        MDmaxIter=process_config.get("MDmaxIter", 100),
+                        MDTimeStep=process_config.get("MDTimeStep", 0.5),
+                        MDOptcriterion=process_config.get("MDOptcriterion", 1.0e-4)
                     )
         self.app.logger.debug(f"转换完成，OpenMX输入文件已保存到: {output_file}")
         return output_file
@@ -240,8 +244,9 @@ EOF
 cd {workdir}
 mpirun -np {process_config.get("ncpus", 16)} {self.openmx} {openmx_input_file}  > {process_config.get("system_name","SystemName")}.std
 """
-        
-        if process_config.get("type", "Nomd") in ["Opt", "NVE", "NVT_VS","NVT_NH"]:
+        ifdiffposcar=(process_config.get("type", "Nomd") in ["Opt", "NVE", "NVT_VS","NVT_NH"])
+
+        if ifdiffposcar:
             sbatch_script += f"""
 conda run -n {self.conda_env} python {get_package_path("openmx-flow/utils_openmx/poscar2openmx.py")} \\
     --structure {structure} \\
@@ -255,18 +260,24 @@ conda run -n {self.conda_env} python {get_package_path("openmx-flow/utils_openmx
     --ScfCriterion {process_config.get("ScfCriterion", 1.0e-6)} \\
     --charge {process_config.get("charge", 0.0)} \\
     --type {process_config.get("type", "Nomd")} \\
-    --mdfile {workdir / process_config.get("system_name", "SystemName")}.md2
+    --mdfile {workdir / process_config.get("system_name", "SystemName")}.md2 \\
+    --MDmaxIter {process_config.get("MDmaxIter", 100)} \\
+    --MDTimeStep {process_config.get("MDTimeStep", 0.5)} \\
+    --MDOptcriterion {process_config.get("MDOptcriterion", 1.0e-4)}
         """
-        
-        sbatch_script += f"""\n
-
+            sbatch_script += f"""\n
 mpirun -np {process_config.get("ncpus", 16)} {self.openmx_postprocess} {workdir / (str(Path(openmx_input_file).stem)+"_final.dat")}
         """
+        else:
+            sbatch_script += f"""\n
+mpirun -np {process_config.get("ncpus", 16)} {self.openmx_postprocess} {workdir / (str(Path(openmx_input_file).stem)+".dat")}
+        """
+
         if gen_graph:
             sbatch_script += f"""\n
 conda run -n {self.conda_env} python {get_package_path("openmx-flow/utils_openmx/graph_data_gen.py")} \\
         --graph_data_save_path {workdir / "graph_data.npz"} \\
-        --dat_file_name {openmx_input_file}    \\
+        --dat_file_name {openmx_input_file if (not ifdiffposcar) else ((str(Path(openmx_input_file).stem)+"_final.dat"))}    \\
         --scf_path {workdir} \\
         --nao_max {process_config.get("nao_max")} \\
         --soc_switch {process_config.get("soc_switch")} \\
